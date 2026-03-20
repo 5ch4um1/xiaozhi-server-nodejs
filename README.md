@@ -68,7 +68,6 @@ Most Xiaozhi-compatible devices (like those from the "Xiaozhi-ESP32" project) ca
 1.  **Connect to Device**: Use a mobile phone or computer to connect to the WiFi network named `Xiaozhi-xxxxxx` or `Zoe`.
 2.  **Access Web Panel**: Open a browser and visit `http://192.168.4.1`.
 3.  **Update OTA URL**: Locate the field labeled **OTA URL** and enter your custom server URL (e.g., `https://your-domain.com/xiaozhi/ota`).
-4.  **Auth Token**: Ensure the `CLIENT_AUTH_TOKEN` in your `.env` matches the token expected by the device.
 
 **Option B: Firmware Configuration**
 If you are building the firmware yourself, adjust the OTA URL in `idf.py menuconfig` before flashing.
