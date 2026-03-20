@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parrot - Device Manager</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f4f9; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1, h2, h3 { margin-top: 0; }
+        .hidden { display: none !important; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="password"], input[type="text"], textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        textarea { resize: vertical; height: 100px; }
+        button { background: #0066cc; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        button:hover { background: #005bb5; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; margin-bottom: 30px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #f8f9fa; }
+        .status-approved { color: green; font-weight: bold; }
+        .status-pending { color: orange; font-weight: bold; }
+        .actions button { margin-right: 5px; margin-bottom: 5px; }
+        .btn-approve { background: #28a745; }
+        .btn-approve:hover { background: #218838; }
+        .btn-delete { background: #dc3545; }
+        .btn-delete:hover { background: #c82333; }
+        .btn-config { background: #17a2b8; }
+        .btn-config:hover { background: #138496; }
+        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .nav-tabs { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 20px; }
+        .nav-tab { padding: 10px 20px; cursor: pointer; border: 1px solid transparent; border-bottom: none; background: #f8f9fa; }
+        .nav-tab.active { background: white; border-color: #ccc; border-radius: 4px 4px 0 0; margin-bottom: -1px; font-weight: bold; }
+        
+        /* Modal styles */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+        .modal { background: white; padding: 20px; border-radius: 8px; width: 90%; max-width: 500px; max-height: 90vh; overflow-y: auto; }
+        .modal-footer { margin-top: 20px; display: flex; justify-content: flex-end; gap: 10px; }
+        .checkbox-group { margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+        .checkbox-group input { width: auto; }
+        
+        pre { background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 13px; }
+    </style>
+</head>
+<body>
+
+<div class="container" id="loginView">
+    <h1>Login</h1>
+    <div class="form-group">
+        <input type="password" id="password" placeholder="Admin Password" onkeypress="if(event.key === 'Enter') login()">
+    </div>
+    <button onclick="login()">Login</button>
+    <p id="loginError" style="color: red; display: none;">Invalid password.</p>
+</div>
+
+<div class="container hidden" id="dashboardView">
+    <div class="header-bar">
+        <h1>Device Manager</h1>
+        <button onclick="logout()" style="background: #6c757d;">Logout</button>
+    </div>
+    
+    <div class="nav-tabs">
+        <div class="nav-tab active" onclick="switchTab('xiaozhi')" id="tab-xiaozhi">Xiaozhi Devices</div>
+        <div class="nav-tab" onclick="switchTab('mcp')" id="tab-mcp">MCP Devices</div>
+    </div>
+
+    <!-- Xiaozhi Devices Section -->
+    <div id="section-xiaozhi">
+        <h3>Xiaozhi ESP32 Devices</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>MAC Address</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="deviceTableBody"></tbody>
+        </table>
+    </div>
+
+    <!-- MCP Devices Section -->
+    <div id="section-mcp" class="hidden">
+        <h3>MCP Client Devices</h3>
+        <p style="font-size:14px; color:#555;">These are external scripts or ESP32 devices that connect to the MCP endpoint to expose tool calls to Gemini.</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Device ID</th>
+                    <th>Status</th>
+                    <th>Connection</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="mcpTableBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Modal: Config Xiaozhi Device -->
+<div class="modal-overlay hidden" id="configModal">
+    <div class="modal">
+        <h3>Configure Xiaozhi Device</h3>
+        <p id="configMacDisplay" style="font-weight:bold;"></p>
+        
+        <div class="form-group">
+            <label for="configPrompt">System Prompt (Personality)</label>
+            <textarea id="configPrompt"></textarea>
+        </div>
+        
+        <div class="checkbox-group">
+            <input type="checkbox" id="configInputTrans">
+            <label for="configInputTrans" style="margin:0;">Enable Input Transcription (STT)</label>
+        </div>
+        
+        <div class="checkbox-group">
+            <input type="checkbox" id="configOutputTrans">
+            <label for="configOutputTrans" style="margin:0;">Enable Output Transcription (TTS Subtitles)</label>
+        </div>
+        
+        <div class="form-group" style="margin-top: 20px;">
+            <label>Expose Tools from MCP Devices:</label>
+            <div id="mcpCheckboxes"></div>
+            <p id="noMcpMsg" style="font-size:13px; color:#777; display:none;">No approved MCP devices available.</p>
+        </div>
+
+        <div class="modal-footer">
+            <button onclick="closeConfigModal()" style="background: #6c757d;">Cancel</button>
+            <button onclick="saveConfig()">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: View MCP Tools -->
+<div class="modal-overlay hidden" id="toolsModal">
+    <div class="modal">
+        <h3>MCP Tools for <span id="toolsMcpId"></span></h3>
+        <div id="toolsContent"></div>
+        <div class="modal-footer">
+            <button onclick="closeToolsModal()" style="background: #6c757d;">Close</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let currentDevices = {};
+    let currentMcpDevices = {};
+    let editingMac = null;
+
+    async function checkAuth() {
+        const res = await fetch('/api/auth/status');
+        if (res.ok) {
+            document.getElementById('loginView').classList.add('hidden');
+            document.getElementById('dashboardView').classList.remove('hidden');
+            loadData();
+        } else {
+            document.getElementById('loginView').classList.remove('hidden');
+            document.getElementById('dashboardView').classList.add('hidden');
+        }
+    }
+
+    async function login() {
+        const password = document.getElementById('password').value;
+        const res = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+        if (res.ok) {
+            document.getElementById('loginError').style.display = 'none';
+            document.getElementById('password').value = '';
+            checkAuth();
+        } else {
+            document.getElementById('loginError').style.display = 'block';
+        }
+    }
+
+    async function logout() {
+        await fetch('/api/logout', { method: 'POST' });
+        checkAuth();
+    }
+
+    function switchTab(tab) {
+        if (tab === 'xiaozhi') {
+            document.getElementById('tab-xiaozhi').classList.add('active');
+            document.getElementById('tab-mcp').classList.remove('active');
+            document.getElementById('section-xiaozhi').classList.remove('hidden');
+            document.getElementById('section-mcp').classList.add('hidden');
+        } else {
+            document.getElementById('tab-mcp').classList.add('active');
+            document.getElementById('tab-xiaozhi').classList.remove('active');
+            document.getElementById('section-mcp').classList.remove('hidden');
+            document.getElementById('section-xiaozhi').classList.add('hidden');
+        }
+    }
+
+    async function loadData() {
+        const resDev = await fetch('/api/devices');
+        if (resDev.ok) currentDevices = await resDev.json();
+        
+        const resMcp = await fetch('/api/mcp_devices');
+        if (resMcp.ok) currentMcpDevices = await resMcp.json();
+        
+        renderXiaozhiTable();
+        renderMcpTable();
+    }
+
+    function renderXiaozhiTable() {
+        const tbody = document.getElementById('deviceTableBody');
+        tbody.innerHTML = '';
+        
+        for (const [mac, data] of Object.entries(currentDevices)) {
+            const tr = document.createElement('tr');
+            
+            const tdMac = document.createElement('td');
+            tdMac.textContent = mac;
+            
+            const tdStatus = document.createElement('td');
+            tdStatus.textContent = data.status.toUpperCase();
+            tdStatus.className = data.status === 'approved' ? 'status-approved' : 'status-pending';
+            
+            const tdActions = document.createElement('td');
+            tdActions.className = 'actions';
+            
+            if (data.status === 'pending') {
+                const btnApprove = document.createElement('button');
+                btnApprove.textContent = 'Approve';
+                btnApprove.className = 'btn-approve';
+                btnApprove.onclick = () => approveDevice(mac);
+                tdActions.appendChild(btnApprove);
+            } else {
+                const btnConfig = document.createElement('button');
+                btnConfig.textContent = 'Config';
+                btnConfig.className = 'btn-config';
+                btnConfig.onclick = () => openConfigModal(mac);
+                tdActions.appendChild(btnConfig);
+            }
+            
+            const btnDelete = document.createElement('button');
+            btnDelete.textContent = 'Delete';
+            btnDelete.className = 'btn-delete';
+            btnDelete.onclick = () => deleteDevice(mac);
+            tdActions.appendChild(btnDelete);
+            
+            tr.appendChild(tdMac);
+            tr.appendChild(tdStatus);
+            tr.appendChild(tdActions);
+            tbody.appendChild(tr);
+        }
+    }
+
+    function renderMcpTable() {
+        const tbody = document.getElementById('mcpTableBody');
+        tbody.innerHTML = '';
+        
+        for (const [id, data] of Object.entries(currentMcpDevices)) {
+            const tr = document.createElement('tr');
+            
+            const tdId = document.createElement('td');
+            tdId.textContent = id;
+            
+            const tdStatus = document.createElement('td');
+            tdStatus.textContent = (data.status || 'unknown').toUpperCase();
+            tdStatus.className = data.status === 'approved' ? 'status-approved' : 'status-pending';
+            
+            const tdConn = document.createElement('td');
+            tdConn.textContent = data.connected ? '🟢 Online' : '🔴 Offline';
+            
+            const tdActions = document.createElement('td');
+            tdActions.className = 'actions';
+            
+            if (data.status !== 'approved') {
+                const btnApprove = document.createElement('button');
+                btnApprove.textContent = 'Approve';
+                btnApprove.className = 'btn-approve';
+                btnApprove.onclick = () => approveMcp(id);
+                tdActions.appendChild(btnApprove);
+            }
+            
+            if (data.tools && data.tools.length > 0) {
+                const btnTools = document.createElement('button');
+                btnTools.textContent = `View Tools (${data.tools.length})`;
+                btnTools.className = 'btn-config';
+                btnTools.onclick = () => openToolsModal(id);
+                tdActions.appendChild(btnTools);
+            }
+            
+            const btnDelete = document.createElement('button');
+            btnDelete.textContent = 'Delete';
+            btnDelete.className = 'btn-delete';
+            btnDelete.onclick = () => deleteMcp(id);
+            tdActions.appendChild(btnDelete);
+            
+            tr.appendChild(tdId);
+            tr.appendChild(tdStatus);
+            tr.appendChild(tdConn);
+            tr.appendChild(tdActions);
+            tbody.appendChild(tr);
+        }
+    }
+
+    // Actions
+    async function approveDevice(mac) {
+        await fetch(`/api/devices/${encodeURIComponent(mac)}/approve`, { method: 'POST' });
+        loadData();
+    }
+
+    async function deleteDevice(mac) {
+        if (!confirm(`Delete device ${mac}?`)) return;
+        await fetch(`/api/devices/${encodeURIComponent(mac)}`, { method: 'DELETE' });
+        loadData();
+    }
+
+    async function approveMcp(id) {
+        await fetch(`/api/mcp_devices/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+        loadData();
+    }
+
+    async function deleteMcp(id) {
+        if (!confirm(`Delete MCP device ${id}?`)) return;
+        await fetch(`/api/mcp_devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        loadData();
+    }
+
+    // Modals
+    function openConfigModal(mac) {
+        editingMac = mac;
+        const dev = currentDevices[mac];
+        document.getElementById('configMacDisplay').textContent = mac;
+        document.getElementById('configPrompt').value = dev.prompt || "You are a helpful assistant. Keep responses short.";
+        document.getElementById('configInputTrans').checked = dev.input_transcription !== false;
+        document.getElementById('configOutputTrans').checked = dev.output_transcription !== false;
+        
+        // Populate MCP checkboxes
+        const mcpContainer = document.getElementById('mcpCheckboxes');
+        mcpContainer.innerHTML = '';
+        let hasApprovedMcp = false;
+        
+        for (const [mcpId, mcpData] of Object.entries(currentMcpDevices)) {
+            if (mcpData.status === 'approved') {
+                hasApprovedMcp = true;
+                const div = document.createElement('div');
+                div.className = 'checkbox-group';
+                
+                const chk = document.createElement('input');
+                chk.type = 'checkbox';
+                chk.id = `mcp_chk_${mcpId}`;
+                chk.value = mcpId;
+                if (dev.enabled_mcp_devices && dev.enabled_mcp_devices.includes(mcpId)) {
+                    chk.checked = true;
+                }
+                
+                const lbl = document.createElement('label');
+                lbl.htmlFor = `mcp_chk_${mcpId}`;
+                lbl.textContent = mcpId;
+                lbl.style.margin = '0';
+                
+                div.appendChild(chk);
+                div.appendChild(lbl);
+                mcpContainer.appendChild(div);
+            }
+        }
+        
+        document.getElementById('noMcpMsg').style.display = hasApprovedMcp ? 'none' : 'block';
+        document.getElementById('configModal').classList.remove('hidden');
+    }
+
+    function closeConfigModal() {
+        document.getElementById('configModal').classList.add('hidden');
+        editingMac = null;
+    }
+
+    async function saveConfig() {
+        if (!editingMac) return;
+        
+        const enabledMcp = [];
+        const container = document.getElementById('mcpCheckboxes');
+        const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+        checkboxes.forEach(chk => {
+            if (chk.checked) enabledMcp.push(chk.value);
+        });
+        
+        const payload = {
+            prompt: document.getElementById('configPrompt').value,
+            input_transcription: document.getElementById('configInputTrans').checked,
+            output_transcription: document.getElementById('configOutputTrans').checked,
+            enabled_mcp_devices: enabledMcp
+        };
+        
+        await fetch(`/api/devices/${encodeURIComponent(editingMac)}/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        
+        closeConfigModal();
+        loadData();
+    }
+
+    function openToolsModal(id) {
+        const mcp = currentMcpDevices[id];
+        document.getElementById('toolsMcpId').textContent = id;
+        
+        const content = document.getElementById('toolsContent');
+        content.innerHTML = '';
+        
+        if (mcp && mcp.tools) {
+            mcp.tools.forEach(t => {
+                const h4 = document.createElement('h4');
+                h4.textContent = t.name;
+                h4.style.marginBottom = '5px';
+                
+                const p = document.createElement('p');
+                p.textContent = t.description || 'No description';
+                p.style.marginTop = '0';
+                p.style.fontSize = '14px';
+                
+                const pre = document.createElement('pre');
+                pre.textContent = JSON.stringify(t.inputSchema || {}, null, 2);
+                
+                content.appendChild(h4);
+                content.appendChild(p);
+                content.appendChild(pre);
+            });
+        }
+        
+        document.getElementById('toolsModal').classList.remove('hidden');
+    }
+
+    function closeToolsModal() {
+        document.getElementById('toolsModal').classList.add('hidden');
+    }
+
+    // Init
+    checkAuth();
+    setInterval(loadData, 5000); // Auto refresh
+</script>
+
+</body>
+</html>
