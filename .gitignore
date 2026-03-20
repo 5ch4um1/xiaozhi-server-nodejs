@@ -1,0 +1,11 @@
+node_modules/
+
+# Ignore contents of temporary/session directories
+sessions/*
+tmp/*
+public/xiaozhi/*
+
+# Keep the directories tracked via .gitkeep
+!sessions/.gitkeep
+!tmp/.gitkeep
+!public/xiaozhi/.gitkeep
