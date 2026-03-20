@@ -26,11 +26,11 @@ Currently, the server uses a single, global `CLIENT_AUTH_TOKEN` (defined in your
 
 ### 1. Prerequisites
 - A **Google Gemini API Key** (supporting Live API).
-- Node.js 18+ environment.
+- Node.js 20+ environment.
 
 ### 2. Installation
 ```bash
-cd Xiaozhi-server-NodeJs-simple
+cd xiaozhi-server-nodejs
 npm install
 ```
 
@@ -41,7 +41,7 @@ cp .env.example .env
 ```
 
 #### Production Deployment (Reverse Proxy)
-For production environments, it is recommended to run the app behind a reverse proxy like **Nginx**. This handles SSL termination and provides a stable interface for WebSocket connections. 
+For production environments, you should run the app behind a reverse proxy like **Nginx**. This handles SSL termination and provides a stable interface for WebSocket connections. 
 
 Add the following to your Nginx site configuration:
 
@@ -59,6 +59,7 @@ location / {
     proxy_read_timeout 5s;
 }
 ```
+You may want to consider creating a systemd service that runs the app.
 
 ### 4. Connecting a Xiaozhi Watch
 Most Xiaozhi-compatible devices (like those from the "Xiaozhi-ESP32" project) can be configured to point to your relay:
@@ -88,3 +89,7 @@ In development, you can tail the current log:
 ```bash
 tail -f connection-$(date +%Y-%m-%d).log
 ```
+
+### 5. Limitations
+Only implements the websocket protocol, the mqtt endpoint is only a placeholder for now.
+Limited to the Gemini-live LLM backend for now, others are planned for future releases.
