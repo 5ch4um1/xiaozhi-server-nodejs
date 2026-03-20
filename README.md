@@ -1,4 +1,4 @@
-# Parrot Xiaozhi Relay - Gemini Live Bridge
+# Xiaozhi Relay - Gemini Live Bridge
 
 A specialized Node.js relay that implements the **Xiaozhi Protocol**, bridging hardware devices (like ESP32 smartwatches and AI assistants) with the **Google Gemini 2.5 Live API**.
 
