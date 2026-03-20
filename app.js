@@ -333,7 +333,7 @@ function handleOta(req, res) {
     // Check device registration
     let isAllowed = false;
     if (devices[macAddress]) {
-      if (devices[macAddress].status === 'approved') {
+      if (devices[macAddress].status === 'approved' && devices[macAddress].uuid === uuid) {
         isAllowed = true;
       }
     } else {

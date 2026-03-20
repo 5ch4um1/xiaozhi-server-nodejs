@@ -46,10 +46,12 @@
 
 <div class="container" id="loginView">
     <h1>Login</h1>
-    <div class="form-group">
-        <input type="password" id="password" placeholder="Admin Password" onkeypress="if(event.key === 'Enter') login()">
-    </div>
-    <button onclick="login()">Login</button>
+    <form onsubmit="event.preventDefault(); login()">
+        <div class="form-group">
+            <input type="password" id="password" name="password" autocomplete="current-password" placeholder="Admin Password">
+        </div>
+        <button type="submit">Login</button>
+    </form>
     <p id="loginError" style="color: red; display: none;">Invalid password.</p>
 </div>
 
