@@ -89,10 +89,18 @@ Edit `.env` and replace `10.0.0.101` with your actual local IP in both `HOST`, `
 ```bash
 node app.js
 ```
-The server will now be listening on your local IP at port 3000.
+The server will now be listening on your local IP at port 3000:
+```bash
+:~/xiaozhi-server-nodejs$ node app.js
+[dotenv@17.3.1] injecting env (10) from .env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+[2026-03-21T13:04:09.945Z] INFO: Server listening on 10.0.0.101:3000
+[2026-03-21T13:04:09.947Z] INFO: Web UI: http://10.0.0.101:3000/
+[2026-03-21T13:04:09.947Z] INFO: MCP Endpoint: ws://10.0.0.101:3000/mcp
+[2026-03-21T13:04:40.087Z] INFO: [OTA] POST request from fc:01:02:03:04:05
+```
 
 ### 5. Connecting a Xiaozhi Device
-Most Xiaozhi-compatible devices (like those from the "Xiaozhi-ESP32" project) can be configured to point to your relay:
+Most Xiaozhi-compatible devices (like those from the https://github.com/78/xiaozhi-esp32 project) can probably be configured to point to your relay:
 
 **Option A: Web Interface (Recommended)**
 1.  **Connect to Device**: Use a mobile phone or computer to connect to the WiFi network named `Xiaozhi-xxxxxx` or `Zoe`.
