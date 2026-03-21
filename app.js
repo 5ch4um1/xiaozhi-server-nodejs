@@ -16,10 +16,15 @@ const bodyParser = require('body-parser');
 
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY;
+const LLM_BACKEND = process.env.LLM_BACKEND || 'gemini'; // 'gemini' or 'qwen'
 const CLIENT_AUTH_TOKEN = process.env.CLIENT_AUTH_TOKEN || 'default_token';
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
-const MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-native-audio-preview-12-2025';
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3-omni-flash-realtime';
+const GEMINI_VOICE = process.env.GEMINI_VOICE || 'Aoede';
+const QWEN_VOICE = process.env.QWEN_VOICE || 'Cherry';
 const MQTT_ENDPOINT = process.env.MQTT_ENDPOINT || 'mqtt://localhost:1883';
 const WEBSOCKET_URL_FOR_ALLOWED_DEVICE = process.env.WEBSOCKET_URL_FOR_ALLOWED_DEVICE || `ws://localhost:${PORT}/xiaozhi/v1/`;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
@@ -62,8 +67,11 @@ process.on('uncaughtException', (error) => {
   setTimeout(() => process.exit(1), 1000);
 });
 
-if (!GEMINI_API_KEY) {
+if (LLM_BACKEND === 'gemini' && !GEMINI_API_KEY) {
   logger.error('Missing GEMINI_API_KEY in .env');
+  process.exit(1);
+} else if (LLM_BACKEND === 'qwen' && !DASHSCOPE_API_KEY) {
+  logger.error('Missing DASHSCOPE_API_KEY in .env');
   process.exit(1);
 }
 
@@ -119,7 +127,7 @@ function sendMcpRequest(ws, method, params) {
     const info = mcpClients.get(ws);
     const id = mcpMessageId++;
     mcpCallbacks.set(id, resolve);
-    
+
     let requestPayload = { jsonrpc: "2.0", id, method, params };
     if (info && info.isXiaozhi) {
       requestPayload = { type: 'mcp', payload: requestPayload };
@@ -127,7 +135,7 @@ function sendMcpRequest(ws, method, params) {
 
     logger.debug(`[MCP] Sending to ${info?.id || 'unknown'}: ${JSON.stringify(requestPayload)}`);
     ws.send(JSON.stringify(requestPayload));
-    
+
     setTimeout(() => {
       if (mcpCallbacks.has(id)) {
         mcpCallbacks.delete(id);
@@ -164,7 +172,7 @@ function setupMcpClient(ws, clientId, isXiaozhi = false) {
     };
     if (isXiaozhi) initNotification = { type: 'mcp', payload: initNotification };
     ws.send(JSON.stringify(initNotification));
-    
+
     logger.info(`[MCP] Device ${clientId} initialized. Requesting tools...`);
     return sendMcpRequest(ws, 'tools/list', {});
   }).then((res) => {
@@ -208,15 +216,18 @@ function requireAuth(req, res, next) {
 app.post('/api/login', (req, res) => {
   if (req.body.password === ADMIN_PASSWORD) {
     req.session.authenticated = true;
-    res.json({ success: true });
+    req.session.save((err) => {
+      res.json({ success: true });
+    });
   } else {
     res.status(401).json({ error: 'Invalid password' });
   }
 });
 
 app.post('/api/logout', (req, res) => {
-  req.session.destroy();
-  res.json({ success: true });
+  req.session.destroy((err) => {
+    res.json({ success: true });
+  });
 });
 
 app.get('/api/auth/status', requireAuth, (req, res) => {
@@ -253,9 +264,14 @@ app.post('/api/devices/:mac/config', requireAuth, (req, res) => {
   const mac = req.params.mac;
   if (devices[mac]) {
     devices[mac].prompt = req.body.prompt !== undefined ? req.body.prompt : devices[mac].prompt;
+    devices[mac].llm_backend = req.body.llm_backend !== undefined ? req.body.llm_backend : devices[mac].llm_backend;
+    devices[mac].gemini_model = req.body.gemini_model !== undefined ? req.body.gemini_model : devices[mac].gemini_model;
+    devices[mac].qwen_model = req.body.qwen_model !== undefined ? req.body.qwen_model : devices[mac].qwen_model;
+    devices[mac].gemini_voice = req.body.gemini_voice !== undefined ? req.body.gemini_voice : devices[mac].gemini_voice;
+    devices[mac].qwen_voice = req.body.qwen_voice !== undefined ? req.body.qwen_voice : devices[mac].qwen_voice;
     devices[mac].input_transcription = req.body.input_transcription !== undefined ? req.body.input_transcription : devices[mac].input_transcription;
     devices[mac].output_transcription = req.body.output_transcription !== undefined ? req.body.output_transcription : devices[mac].output_transcription;
-    devices[mac].enabled_mcp_devices = req.body.enabled_mcp_devices || devices[mac].enabled_mcp_devices || [];
+    devices[mac].enabled_mcp_devices = req.body.enabled_mcp_devices !== undefined ? req.body.enabled_mcp_devices : (devices[mac].enabled_mcp_devices || []);
     saveDevices();
     res.json({ success: true });
   } else {
@@ -322,7 +338,7 @@ app.all(/^\/xiaozhi\/ota/, (req, res) => {
 function handleOta(req, res) {
   logger.info(`[OTA] ${req.method} request from ${req.headers['device-id'] || 'unknown'}`);
   logger.debug(`[OTA] Request Headers: ${JSON.stringify(req.headers)}`);
-  
+
   if (req.method === 'POST') {
     logger.debug(`[OTA] Request Body: ${JSON.stringify(req.body)}`);
     const macAddress = req.body.mac_address || req.headers['device-id'] || '00:00:00:00:00:00';
@@ -339,9 +355,9 @@ function handleOta(req, res) {
       }
     } else {
       // Register as pending
-      devices[macAddress] = { 
-        uuid, 
-        name: `Device ${macAddress}`, 
+      devices[macAddress] = {
+        uuid,
+        name: `Device ${macAddress}`,
         status: 'pending',
         prompt: "You are a helpful assistant. Keep responses short.",
         input_transcription: true,
@@ -424,7 +440,7 @@ server.on('upgrade', (request, socket, head) => {
 wssMcp.on('connection', (ws, req) => {
   const mcpUrl = new URL(req.url, `http://${req.headers.host}`);
   const clientId = mcpUrl.searchParams.get('device_id') || crypto.randomUUID();
-  
+
   logger.info(`[MCP] New client connected: ${clientId} from ${req.socket.remoteAddress}`);
 
   // Keep-alive ping to prevent aggressive idle timeouts from Nginx/Node
@@ -466,7 +482,7 @@ wssXiaozhi.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const authHeader = req.headers['authorization'];
   let token = url.searchParams.get('token');
-  
+
   if (authHeader && authHeader.startsWith('Bearer ')) token = authHeader.substring(7);
 
   if (token !== CLIENT_AUTH_TOKEN) {
@@ -484,14 +500,33 @@ wssXiaozhi.on('connection', (ws, req) => {
   };
 
   logger.info(`[${sessionId}] Authenticated successfully. Device: ${macAddress}`);
-  
+
   let geminiSession = null;
+  let qwenSession = null;
   let isSpeaking = false;
+  let modelDone = false;
   let audioBuffer = [];
   let audioOutputQueue = [];
   let audioSendInterval = null;
   const FRAME_DURATION_MS = 60;
   let outputTranscriptionBuffer = '';
+  let ttsTextQueue = [];
+  let lastTtsTime = 0;
+  let currentTtsDelay = 0;
+
+  function queueTtsText(text) {
+    if (!text) return;
+    text = text.trim();
+    if (text.length === 0) return;
+    
+    while (text.length > 120) {
+        ttsTextQueue.push(text.substring(0, 120));
+        text = text.substring(120);
+    }
+    if (text.length > 0) ttsTextQueue.push(text);
+    
+    scheduleAudioSend();
+  }
 
   const decoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 16000 });
   const encoder = new prism.opus.Encoder({ frameSize: 1440, channels: 1, rate: 24000 });
@@ -504,29 +539,60 @@ wssXiaozhi.on('connection', (ws, req) => {
           data: pcmChunk.toString('base64')
         }
       });
+    } else if (qwenSession && qwenSession.readyState === WebSocket.OPEN) {
+      qwenSession.send(JSON.stringify({
+        event_id: crypto.randomUUID(),
+        type: 'input_audio_buffer.append',
+        audio: pcmChunk.toString('base64')
+      }));
     } else {
       audioBuffer.push(pcmChunk);
     }
   });
-  
+
   decoder.on('error', (err) => logger.error(`[${sessionId}] Decoder error:`, err));
 
   encoder.on('data', (opusChunk) => {
     audioOutputQueue.push(opusChunk);
     scheduleAudioSend();
   });
-  
+
   encoder.on('error', (err) => logger.error(`[${sessionId}] Encoder error:`, err));
 
   function scheduleAudioSend() {
     if (!audioSendInterval) {
       audioSendInterval = setInterval(() => {
+        const now = Date.now();
+        
+        if (ttsTextQueue.length > 0 && now - lastTtsTime >= currentTtsDelay) {
+          const textToSend = ttsTextQueue.shift();
+          const payload = { type: 'tts', state: 'sentence_start', session_id: sessionId, text: textToSend };
+          logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+          lastTtsTime = now;
+
+          // Calculate delay for this message based on its length to give the user time to read.
+          // We use a base of 2000ms minimum, scaling up linearly with the character count.
+          currentTtsDelay = Math.max(2000, textToSend.length * 80);
+
+          // If the text queue is backing up, dynamically reduce the delay to catch up with audio
+          if (ttsTextQueue.length > 2) currentTtsDelay = Math.max(1000, textToSend.length * 50);
+          if (ttsTextQueue.length > 4) currentTtsDelay = Math.max(500, textToSend.length * 30);
+        }
+
         if (audioOutputQueue.length > 0) {
           const chunkToSend = audioOutputQueue.shift();
           if (ws.readyState === WebSocket.OPEN) ws.send(chunkToSend);
-        } else if (!isSpeaking) {
+        } else if ((modelDone || !isSpeaking) && ttsTextQueue.length === 0) {
+          if (isSpeaking) {
+            isSpeaking = false;
+            const payload = { type: 'tts', state: 'stop', session_id: sessionId };
+            logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+          }
           clearInterval(audioSendInterval);
           audioSendInterval = null;
+          modelDone = false;
         }
       }, FRAME_DURATION_MS);
     }
@@ -540,16 +606,14 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       for (const [mcpWs, info] of mcpClients.entries()) {
         const mcpStatus = mcpDevices[info.id]?.status;
-        // Always include the current Xiaozhi device's tools if it reported them
-        const isCurrentDevice = (info.id === macAddress && info.isXiaozhi);
-        
-        if (isCurrentDevice || (mcpStatus === 'approved' && enabledMcpSet.has(info.id))) {
+
+        if (mcpStatus === 'approved' && enabledMcpSet.has(info.id)) {
           for (const t of info.tools) {
             const toolDef = {
               name: t.name,
               description: t.description || 'No description provided.'
             };
-            
+
             if (t.inputSchema && t.inputSchema.properties && Object.keys(t.inputSchema.properties).length > 0) {
               toolDef.parameters = JSON.parse(JSON.stringify(t.inputSchema)); // Deep copy
               if (toolDef.parameters.type && typeof toolDef.parameters.type === 'string') {
@@ -561,7 +625,7 @@ wssXiaozhi.on('connection', (ws, req) => {
             } else {
                toolDef.parameters = { type: "object", properties: {}, additionalProperties: false };
             }
-            
+
             toolsMap.set(toolDef.name, toolDef);
           }
         }
@@ -571,15 +635,15 @@ wssXiaozhi.on('connection', (ws, req) => {
 
       const sessionConfig = {
         responseModalities: ['AUDIO'],
-        speechConfig: { 
-          voiceConfig: { 
-            prebuiltVoiceConfig: { 
-              voiceName: "Aoede" 
-            } 
-          } 
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: deviceConfig.gemini_voice || GEMINI_VOICE
+            }
+          }
         },
-        systemInstruction: { 
-          parts: [{ text: deviceConfig.prompt }] 
+        systemInstruction: {
+          parts: [{ text: deviceConfig.prompt }]
         }
       };
 
@@ -599,7 +663,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       logger.debug(`[${sessionId}] Gemini session config: ${JSON.stringify(sessionConfig)}`);
 
       geminiSession = await ai.live.connect({
-        model: MODEL,
+        model: deviceConfig.gemini_model || GEMINI_MODEL,
         config: sessionConfig,
         callbacks: {
           onopen: () => {
@@ -671,49 +735,47 @@ wssXiaozhi.on('connection', (ws, req) => {
               }
               if (content.outputTranscription && deviceConfig.output_transcription) {
                 outputTranscriptionBuffer += content.outputTranscription.text;
-                if (outputTranscriptionBuffer.length >= 60) {
-                  const payload = { type: 'tts', state: 'sentence_start', session_id: sessionId, text: outputTranscriptionBuffer };
-                logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
-                ws.send(JSON.stringify(payload));
+                let match;
+                while ((match = outputTranscriptionBuffer.match(/.*?([。！？.!?\n]+)/))) {
+                  const textToSend = match[0];
+                  outputTranscriptionBuffer = outputTranscriptionBuffer.substring(textToSend.length);
+                  queueTtsText(textToSend);
+                }
+                if (outputTranscriptionBuffer.length >= 120) {
+                  queueTtsText(outputTranscriptionBuffer);
                   outputTranscriptionBuffer = '';
                 }
               }
               if (content.turnComplete) {
                 if (outputTranscriptionBuffer.length > 0 && deviceConfig.output_transcription) {
-                  const payload = { type: 'tts', state: 'sentence_start', session_id: sessionId, text: outputTranscriptionBuffer };
-                logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
-                ws.send(JSON.stringify(payload));
+                  queueTtsText(outputTranscriptionBuffer);
                   outputTranscriptionBuffer = '';
                 }
-                if (isSpeaking) {
-                  isSpeaking = false;
-                  const payload = { type: 'tts', state: 'stop', session_id: sessionId };
-                  logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
-                  ws.send(JSON.stringify(payload));
-                }
+                modelDone = true;
               }
               if (content.interrupted) {
                 const payload = { type: 'abort', session_id: sessionId, reason: 'interrupted' };
                 logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
                 ws.send(JSON.stringify(payload));
                 isSpeaking = false;
+                modelDone = false;
+                audioOutputQueue = [];
+                ttsTextQueue = [];
               }
             }
-            
+
             // Function Call Handle (Live API puts toolCall as a top-level field)
             if (response.toolCall?.functionCalls) {
               const toolCall = response.toolCall;
               logger.debug(`[${sessionId}] Gemini sent toolCall: ${JSON.stringify(toolCall)}`);
               for (const call of toolCall.functionCalls) {
                 logger.info(`[${sessionId}] Gemini requested tool call: ${call.name}`);
-                
+
                 // Find which MCP client has this tool (and is approved/enabled)
                 let targetWs = null;
                 for (const [mcpWs, info] of mcpClients.entries()) {
                   const mcpStatus = mcpDevices[info.id]?.status;
-                  // Always include the current Xiaozhi device's tools if it reported them
-                  const isCurrentDevice = (info.id === macAddress && info.isXiaozhi);
-                  if (isCurrentDevice || (mcpStatus === 'approved' && enabledMcpSet.has(info.id))) {
+                  if (mcpStatus === 'approved' && enabledMcpSet.has(info.id)) {
                     if (info.tools.find(t => t.name === call.name)) {
                       targetWs = mcpWs;
                       break;
@@ -785,6 +847,134 @@ wssXiaozhi.on('connection', (ws, req) => {
     }
   }
 
+  function startQwenSession() {
+    try {
+      logger.info(`[${sessionId}] Starting Qwen3 session.`);
+
+      const modelToUse = deviceConfig.qwen_model || QWEN_MODEL;
+      const qwenUrl = `wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model=${modelToUse}`;
+      qwenSession = new WebSocket(qwenUrl, {
+        headers: {
+          'Authorization': `Bearer ${DASHSCOPE_API_KEY}`
+        }
+      });
+
+      qwenSession.on('open', () => {
+        logger.info(`[${sessionId}] Connected to Qwen3 Realtime API`);
+        if (ws.readyState === WebSocket.OPEN) {
+          const payload = { type: 'listen', state: 'start', session_id: sessionId };
+          logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
+          ws.send(JSON.stringify(payload));
+        }
+
+        process.nextTick(() => {
+          if (qwenSession && qwenSession.readyState === WebSocket.OPEN && audioBuffer.length > 0) {
+            logger.info(`[${sessionId}] Sending ${audioBuffer.length} buffered audio chunks to Qwen`);
+            audioBuffer.forEach(chunk => {
+              try {
+                qwenSession.send(JSON.stringify({
+                  event_id: crypto.randomUUID(),
+                  type: 'input_audio_buffer.append',
+                  audio: chunk.toString('base64')
+                }));
+              } catch (e) {
+                logger.error(`[${sessionId}] Error sending buffered audio: ${e.message}`);
+              }
+            });
+            audioBuffer.length = 0;
+          }
+        });
+      });
+
+      qwenSession.on('message', async (message) => {
+        try {
+          const response = JSON.parse(message.toString());
+          if (!['response.audio.delta', 'response.audio_transcript.delta'].includes(response.type)) {
+            logger.debug(`[${sessionId}] Qwen Event: ${response.type} ${response.item?.type || ''}`);
+          }
+
+          if (response.type === 'session.created') {
+            const sessionUpdate = {
+              type: "session.update",
+              session: {
+                modalities: ["text", "audio"],
+                voice: deviceConfig.qwen_voice || QWEN_VOICE,
+                input_audio_format: "pcm16",
+                output_audio_format: "pcm24",
+                instructions: `${deviceConfig.prompt}`,
+                input_audio_transcription: { model: "gummy-realtime-v1" },
+                turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 800 }
+              }
+            };
+            logger.info(`[${sessionId}] Sending session.update for Qwen3 session.`);
+            qwenSession.send(JSON.stringify(sessionUpdate));
+          }
+
+          if (response.type === 'response.audio.delta') {
+            if (!isSpeaking) {
+              isSpeaking = true;
+              ws.send(JSON.stringify({ type: 'tts', state: 'start', session_id: sessionId }));
+            }
+            if (response.delta) {
+              encoder.write(Buffer.from(response.delta, 'base64'));
+            }
+          } else if (response.type === 'response.audio.done') {
+            modelDone = true;
+          } else if (response.type === 'response.done') {
+            modelDone = true;
+          } else if (response.type === 'response.audio_transcript.delta') {
+            if (deviceConfig.output_transcription && response.delta) {
+              outputTranscriptionBuffer += response.delta;
+              let match;
+              while ((match = outputTranscriptionBuffer.match(/.*?([。！？.!?\n]+)/))) {
+                const textToSend = match[0];
+                outputTranscriptionBuffer = outputTranscriptionBuffer.substring(textToSend.length);
+                queueTtsText(textToSend);
+              }
+              if (outputTranscriptionBuffer.length >= 120) {
+                queueTtsText(outputTranscriptionBuffer);
+                outputTranscriptionBuffer = '';
+              }
+            }
+          } else if (response.type === 'response.audio_transcript.done') {
+            if (deviceConfig.output_transcription) {
+              if (outputTranscriptionBuffer.length > 0) {
+                  queueTtsText(outputTranscriptionBuffer);
+                  outputTranscriptionBuffer = '';
+              }
+            }
+          } else if (response.type === 'input_audio_buffer.cleared') {
+            isSpeaking = false;
+            modelDone = false;
+            audioOutputQueue = [];
+            ttsTextQueue = [];
+            const payload = { type: 'abort', session_id: sessionId, reason: 'interrupted' };
+            logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
+            ws.send(JSON.stringify(payload));
+          } else if (response.type === 'session.error' || response.type === 'error') {
+            logger.error(`[${sessionId}] Qwen API error: ${JSON.stringify(response)}`);
+            ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: response.error?.message || 'Qwen Error' }));
+          }
+        } catch (e) {
+          logger.error(`[${sessionId}] Failed to parse Qwen message: ${e.message}`);
+        }
+      });
+
+      qwenSession.on('close', () => {
+        logger.info(`[${sessionId}] Qwen session closed`);
+        qwenSession = null;
+      });
+
+      qwenSession.on('error', (error) => {
+        logger.error(`[${sessionId}] Qwen error:`, error);
+        ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: error.message }));
+      });
+    } catch (err) {
+      logger.error(`[${sessionId}] Failed to connect to Qwen:`, err);
+      ws.close();
+    }
+  }
+
   ws.on('message', (message, isBinary) => {
     if (isBinary) {
       decoder.write(message);
@@ -792,7 +982,7 @@ wssXiaozhi.on('connection', (ws, req) => {
       try {
         const data = JSON.parse(message.toString());
         logger.debug(`[${sessionId}] Received from Xiaozhi: ${JSON.stringify(data)}`);
-        
+
         // Handle MCP JSON-RPC responses (can be top-level or wrapped in a Xiaozhi message)
         const possibleMcpData = data.payload || data;
         if (possibleMcpData.id && mcpCallbacks.has(possibleMcpData.id)) {
@@ -814,7 +1004,7 @@ wssXiaozhi.on('connection', (ws, req) => {
 
           if (data.features && data.features.mcp) {
             logger.info(`[${sessionId}] MCP features detected. Waiting for tools...`);
-            
+
             const mcpWaitPromise = new Promise((resolve) => {
               const setupPromise = new Promise((innerResolve) => {
                 setTimeout(() => {
@@ -823,26 +1013,37 @@ wssXiaozhi.on('connection', (ws, req) => {
                 }, 1000);
               });
 
-              const timeoutPromise = new Promise((innerResolve) => {
-                setTimeout(() => {
-                  logger.warn(`[${sessionId}] MCP tool discovery timed out after 5s`);
-                  innerResolve();
-                }, 5000);
-              });
-
-              Promise.race([setupPromise, timeoutPromise]).finally(resolve);
+              const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
+              if (activeBackend === 'qwen') {
+                // Skip tool wait timeout if we're using qwen since it doesn't support them right now
+                logger.info(`[${sessionId}] Skipping tool discovery wait for Qwen backend.`);
+                resolve();
+              } else {
+                const timeoutPromise = new Promise((innerResolve) => {
+                  setTimeout(() => {
+                    logger.warn(`[${sessionId}] MCP tool discovery timed out after 5s`);
+                    innerResolve();
+                  }, 5000);
+                });
+  
+                Promise.race([setupPromise, timeoutPromise]).finally(resolve);
+              }
             });
 
             mcpWaitPromise.finally(() => {
-              if (!geminiSession) {
-                logger.info(`[${sessionId}] Proceeding to start Gemini session.`);
-                startGeminiSession();
+              if (!geminiSession && !qwenSession) {
+                logger.info(`[${sessionId}] Proceeding to start LLM session.`);
+                const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
+                activeBackend === 'qwen' ? startQwenSession() : startGeminiSession();
               }
             });
           } else {
-            if (!geminiSession) startGeminiSession();
+            if (!geminiSession && !qwenSession) {
+              const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
+              activeBackend === 'qwen' ? startQwenSession() : startGeminiSession();
+            }
           }
-        } else if (data.type === 'listen' && data.state === 'start' && !geminiSession) {
+        } else if (data.type === 'listen' && data.state === 'start' && !geminiSession && !qwenSession) {
           // You can also start gemini session strictly when client sends listen: start
         }
       } catch (e) {}
@@ -856,7 +1057,7 @@ wssXiaozhi.on('connection', (ws, req) => {
     encoder.destroy();
     if (audioSendInterval) clearInterval(audioSendInterval);
   });
-  
+
   // startGeminiSession(); // Removed immediate start
 });
 

@@ -1,21 +1,23 @@
-# Xiaozhi Relay - Gemini Live Bridge
+# Xiaozhi Relay - Gemini Live & Qwen Realtime Bridge
 
-A specialized Node.js relay that implements the **Xiaozhi Protocol**, bridging hardware devices (like ESP32 smartwatches and AI assistants) with the **Google Gemini 2.5 Live API**.
+A specialized Node.js relay that implements the **Xiaozhi Protocol**, bridging hardware devices (like ESP32 smartwatches and AI assistants) with the **Google Gemini 2.5 Live API** and **Alibaba Qwen Realtime API**.
 
 ## Features
 - **Xiaozhi Protocol Support**: Fully compatible with Xiaozhi "hello" handshakes, state management (stt, tts, abort), and binary audio transport.
-- **Real-time Transcoding**: Converts 16kHz Opus from devices to PCM for Gemini, and 24kHz PCM from Gemini to 60ms Opus frames for devices.
+- **Multi-Model Support**: Choose between Google Gemini 2.5 Live API (with MCP Tool calling) and Alibaba Qwen 3 Realtime API (voice-only for now, I'm still trying to figure out how that works with Alibaba). Note: You can switch models and backends per device via the dashboard, but changes only take effect on the *next* voice session (connection).
+- **Custom Voice Selection**: Select from various built-in voices for both Gemini (e.g., Aoede, Puck) and Qwen (e.g., Cherry, Serena) directly from the device configuration dashboard.
+- **Real-time Transcoding**: Converts 16kHz Opus from devices to PCM, and transcodes the LLM's PCM responses back to 60ms Opus frames for the devices.
 - **Low Latency**: Direct WebSocket-to-WebSocket piping for minimal delay.
 - **Secure**: Token-based authentication and manual MAC-based device approval.
 - **Deployment Ready**: Easy deployment on standard Node.js hosting environments.
 
 ## How it Works
 1.  **Handshake**: The Xiaozhi device connects and sends a `{"type": "hello", ...}` JSON message.
-2.  **Session Initiation**: The relay validates the token and opens a persistent connection to Gemini Live.
+2.  **Session Initiation**: The relay validates the token and opens a persistent connection to the configured LLM backend (Gemini Live or Qwen Realtime).
 3.  **Voice Interaction**: 
-    - Device sends 16kHz Opus -> Relay decodes to PCM -> Gemini processes.
-    - Gemini speaks PCM -> Relay encodes to 24kHz Opus (60ms frames) -> Device plays.
-4.  **Feedback**: Relay sends STT and TTS text updates back to the device for display.
+    - Device sends 16kHz Opus -> Relay decodes to PCM -> LLM processes.
+    - LLM speaks PCM -> Relay encodes to 24kHz Opus (60ms frames) -> Device plays.
+4.  **Feedback**: Relay sends STT and TTS text updates back to the device for display, synchronized with the spoken audio.
 
 ## Authentication
 Currently, the server uses a single, global `CLIENT_AUTH_TOKEN` (defined in your `.env`) for all approved devices. When a device is manually approved via the discovery process, the server provides this shared token to the device for its WebSocket sessions.
@@ -25,7 +27,7 @@ Currently, the server uses a single, global `CLIENT_AUTH_TOKEN` (defined in your
 ## Setup Instructions
 
 ### 1. Prerequisites
-- A **Google Gemini API Key** (supporting Live API).
+- A **Google Gemini API Key** (supporting Live API) and/or an **Alibaba DashScope API Key**.
 - Node.js 20+ environment.
 
 ### 2. Installation
@@ -113,7 +115,9 @@ If you are building the firmware yourself, adjust the OTA URL in `idf.py menucon
 ## Technical Details
 - **Audio Input**: 16kHz, Mono, Opus.
 - **Audio Output**: 24kHz, Mono, Opus (60ms frames).
-- **Supported Models**: Optimized for `gemini-2.5-flash-native-audio-preview-12-2025`.
+- **Supported Models**: 
+  - `gemini` backend: Optimized for `gemini-2.5-flash-native-audio-preview-12-2025` with full MCP Tool calling support.
+  - `qwen` backend: Optimized for `qwen3-omni-flash-realtime` providing only voice interactions for now, still trying to figure out tool support, help welcome.
 
 ## Logs
 Logs are automatically rotated and stored in the application root directory as `connection-YYYY-MM-DD.log`. These files contain detailed information about:
@@ -129,4 +133,4 @@ tail -f connection-$(date +%Y-%m-%d).log
 
 ## Limitations
 Only implements the websocket protocol, the mqtt endpoint is only a placeholder for now.
-Limited to the Gemini-live LLM backend for now, others are planned for future releases.
+MCP Tool calling is currently only supported when using the `gemini` backend. The `qwen` backend provides only voice interactions and STT/TTS transcriptions for now, still trying to figure out tool support, help welcome.

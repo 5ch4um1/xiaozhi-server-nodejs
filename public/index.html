@@ -110,6 +110,89 @@
             <textarea id="configPrompt"></textarea>
         </div>
         
+        <div class="form-group">
+            <label for="configBackend">LLM Backend (Overrides Default)</label>
+            <select id="configBackend" onchange="handleBackendChange()" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white;">
+                <option value="">Default (from .env)</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="qwen">Alibaba Qwen</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="configGeminiModel">Gemini Model Override (Optional)</label>
+            <input type="text" id="configGeminiModel" placeholder="e.g. gemini-2.5-flash-native-audio-preview-12-2025">
+        </div>
+        <div class="form-group">
+            <label for="configQwenModel">Qwen Model Override (Optional)</label>
+            <input type="text" id="configQwenModel" placeholder="e.g. qwen3-omni-flash-realtime">
+        </div>
+        <div class="form-group">
+            <label for="configGeminiVoice">Gemini Voice Override (Optional)</label>
+            <select id="configGeminiVoice" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white;">
+                <option value="">Default (from .env)</option>
+                <option value="Aoede">Aoede</option>
+                <option value="Puck">Puck</option>
+                <option value="Charon">Charon</option>
+                <option value="Kore">Kore</option>
+                <option value="Fenrir">Fenrir</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="configQwenVoice">Qwen Voice Override (Optional)</label>
+            <select id="configQwenVoice" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white;">
+                <option value="">Default (from .env)</option>
+                <option value="Cherry">Cherry</option>
+                <option value="Serena">Serena</option>
+                <option value="Ethan">Ethan</option>
+                <option value="Chelsie">Chelsie</option>
+                <option value="Momo">Momo</option>
+                <option value="Vivian">Vivian</option>
+                <option value="Moon">Moon</option>
+                <option value="Maia">Maia</option>
+                <option value="Kai">Kai</option>
+                <option value="Nofish">Nofish</option>
+                <option value="Bella">Bella</option>
+                <option value="Jennifer">Jennifer</option>
+                <option value="Ryan">Ryan</option>
+                <option value="Katerina">Katerina</option>
+                <option value="Aiden">Aiden</option>
+                <option value="Eldric Sage">Eldric Sage</option>
+                <option value="Mia">Mia</option>
+                <option value="Mochi">Mochi</option>
+                <option value="Bellona">Bellona</option>
+                <option value="Vincent">Vincent</option>
+                <option value="Bunny">Bunny</option>
+                <option value="Neil">Neil</option>
+                <option value="Elias">Elias</option>
+                <option value="Arthur">Arthur</option>
+                <option value="Nini">Nini</option>
+                <option value="Ebona">Ebona</option>
+                <option value="Seren">Seren</option>
+                <option value="Pip">Pip</option>
+                <option value="Stella">Stella</option>
+                <option value="Bodega">Bodega</option>
+                <option value="Sonrisa">Sonrisa</option>
+                <option value="Alek">Alek</option>
+                <option value="Dolce">Dolce</option>
+                <option value="Sohee">Sohee</option>
+                <option value="Ono Anna">Ono Anna</option>
+                <option value="Lenn">Lenn</option>
+                <option value="Emilien">Emilien</option>
+                <option value="Andre">Andre</option>
+                <option value="Radio Gol">Radio Gol</option>
+                <option value="Shanghai - Jada">Shanghai - Jada</option>
+                <option value="Beijing - Dylan">Beijing - Dylan</option>
+                <option value="Nanjing - Li">Nanjing - Li</option>
+                <option value="Shaanxi - Marcus">Shaanxi - Marcus</option>
+                <option value="Southern Min - Roy">Southern Min - Roy</option>
+                <option value="Tianjin - Peter">Tianjin - Peter</option>
+                <option value="Sichuan - Sunny">Sichuan - Sunny</option>
+                <option value="Sichuan - Eric">Sichuan - Eric</option>
+                <option value="Cantonese - Rocky">Cantonese - Rocky</option>
+                <option value="Cantonese - Kiki">Cantonese - Kiki</option>
+            </select>
+        </div>
+        
         <div class="checkbox-group">
             <input type="checkbox" id="configInputTrans">
             <label for="configInputTrans" style="margin:0;">Enable Input Transcription (STT)</label>
@@ -324,12 +407,34 @@
         loadData();
     }
 
+    function handleBackendChange() {
+        const backend = document.getElementById('configBackend').value;
+        const container = document.getElementById('mcpCheckboxes');
+        const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+        
+        if (backend === 'qwen') {
+            checkboxes.forEach(chk => {
+                chk.checked = false;
+                chk.disabled = true;
+            });
+        } else {
+            checkboxes.forEach(chk => {
+                chk.disabled = false;
+            });
+        }
+    }
+
     // Modals
     function openConfigModal(mac) {
         editingMac = mac;
         const dev = currentDevices[mac];
         document.getElementById('configMacDisplay').textContent = mac;
         document.getElementById('configPrompt').value = dev.prompt || "You are a helpful assistant. Keep responses short.";
+        document.getElementById('configBackend').value = dev.llm_backend || "";
+        document.getElementById('configGeminiModel').value = dev.gemini_model || "";
+        document.getElementById('configQwenModel').value = dev.qwen_model || "";
+        document.getElementById('configGeminiVoice').value = dev.gemini_voice || "";
+        document.getElementById('configQwenVoice').value = dev.qwen_voice || "";
         document.getElementById('configInputTrans').checked = dev.input_transcription !== false;
         document.getElementById('configOutputTrans').checked = dev.output_transcription !== false;
         
@@ -364,6 +469,7 @@
         }
         
         document.getElementById('noMcpMsg').style.display = hasApprovedMcp ? 'none' : 'block';
+        handleBackendChange(); // Ensure checkboxes are correctly disabled/enabled based on loaded backend
         document.getElementById('configModal').classList.remove('hidden');
     }
 
@@ -384,6 +490,11 @@
         
         const payload = {
             prompt: document.getElementById('configPrompt').value,
+            llm_backend: document.getElementById('configBackend').value,
+            gemini_model: document.getElementById('configGeminiModel').value,
+            qwen_model: document.getElementById('configQwenModel').value,
+            gemini_voice: document.getElementById('configGeminiVoice').value,
+            qwen_voice: document.getElementById('configQwenVoice').value,
             input_transcription: document.getElementById('configInputTrans').checked,
             output_transcription: document.getElementById('configOutputTrans').checked,
             enabled_mcp_devices: enabledMcp
