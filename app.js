@@ -18,6 +18,7 @@ const bodyParser = require('body-parser');
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CLIENT_AUTH_TOKEN = process.env.CLIENT_AUTH_TOKEN || 'default_token';
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '0.0.0.0';
 const MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
 const MQTT_ENDPOINT = process.env.MQTT_ENDPOINT || 'mqtt://localhost:1883';
 const WEBSOCKET_URL_FOR_ALLOWED_DEVICE = process.env.WEBSOCKET_URL_FOR_ALLOWED_DEVICE || `ws://localhost:${PORT}/xiaozhi/v1/`;
@@ -859,8 +860,8 @@ wssXiaozhi.on('connection', (ws, req) => {
   // startGeminiSession(); // Removed immediate start
 });
 
-server.listen(PORT, () => {
-  logger.info(`Parrot Server listening on port ${PORT}`);
-  logger.info(`Web UI: http://localhost:${PORT}/`);
-  logger.info(`MCP Endpoint: ws://localhost:${PORT}/mcp`);
+server.listen(PORT, HOST, () => {
+  logger.info(`Parrot Server listening on ${HOST}:${PORT}`);
+  logger.info(`Web UI: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/`);
+  logger.info(`MCP Endpoint: ws://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/mcp`);
 });

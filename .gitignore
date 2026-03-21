@@ -9,3 +9,17 @@ public/xiaozhi/*
 !sessions/.gitkeep
 !tmp/.gitkeep
 !public/xiaozhi/.gitkeep
+
+# Environments
+.env
+.env.*
+!.env.example
+!.env.example.local
+
+# Logs
+*.log
+*-audit.json
+
+# Dynamic Data
+devices.json
+mcp_devices.json

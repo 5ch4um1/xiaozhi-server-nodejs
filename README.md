@@ -39,6 +39,7 @@ Copy the `.env.example` file to `.env` and fill in your values:
 ```bash
 cp .env.example .env
 ```
+If you are deploying locally, see [Local Linux Box Deployment](#4-local-linux-box-deployment) and use the `.env.example.local` template.
 
 #### Production Deployment (Reverse Proxy)
 For production environments, you should run the app behind a reverse proxy like **Nginx**. This handles SSL termination and provides a stable interface for WebSocket connections. 
@@ -61,7 +62,36 @@ location / {
 ```
 You may want to consider creating a systemd service that runs the app.
 
-### 4. Connecting a Xiaozhi Watch
+### 4. Local Linux Box Deployment
+For local testing on your Linux machine (e.g., Ubuntu, Raspberry Pi), you need to ensure your Xiaozhi device can reach the server over your local network (WiFi).
+
+#### 1. Find Your Local IP
+Run the following command to find your machine's IP address on the local network:
+```bash
+ip a
+```
+or:
+```bash
+hostname -I | awk '{print $1}'
+```
+Example output: `192.168.1.42` or `10.0.0.101`.
+
+#### 2. Configure for Local Network
+Copy the `.env.example.local` template and update it with your IP:
+```bash
+cp .env.example.local .env
+```
+Edit `.env` and replace `10.0.0.101` with your actual local IP in both `HOST`, `MQTT_ENDPOINT`, and `WEBSOCKET_URL_FOR_ALLOWED_DEVICE`. 
+
+**Crucial:** Use `ws://` (WebSocket) instead of `wss://` (WebSocket Secure) for local connections, as local development servers typically don't have SSL certificates.
+
+#### 3. Run the Server
+```bash
+node app.js
+```
+The server will now be listening on your local IP at port 3000.
+
+### 5. Connecting a Xiaozhi Device
 Most Xiaozhi-compatible devices (like those from the "Xiaozhi-ESP32" project) can be configured to point to your relay:
 
 **Option A: Web Interface (Recommended)**
@@ -89,6 +119,6 @@ In development, you can tail the current log:
 tail -f connection-$(date +%Y-%m-%d).log
 ```
 
-### 5. Limitations
+## Limitations
 Only implements the websocket protocol, the mqtt endpoint is only a placeholder for now.
 Limited to the Gemini-live LLM backend for now, others are planned for future releases.
