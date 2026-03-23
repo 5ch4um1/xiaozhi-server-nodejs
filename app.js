@@ -14,6 +14,12 @@ const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const bodyParser = require('body-parser');
 
+// Providers
+const GeminiProvider = require('./providers/gemini');
+const QwenRealtimeProvider = require('./providers/qwen_realtime');
+const QwenOmniProvider = require('./providers/qwen_omni');
+const providersConfig = require('./providers/config');
+
 // Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY;
@@ -92,6 +98,15 @@ let mcpDevices = {};
 try {
   if (fs.existsSync(DEVICES_FILE_PATH)) {
     devices = JSON.parse(fs.readFileSync(DEVICES_FILE_PATH, 'utf8'));
+    let modified = false;
+    for (const mac in devices) {
+      if (!devices[mac].enabled_mcp_devices) devices[mac].enabled_mcp_devices = [];
+      if (!devices[mac].enabled_mcp_devices.includes(BUILTIN_MCP_ID)) {
+        devices[mac].enabled_mcp_devices.push(BUILTIN_MCP_ID);
+        modified = true;
+      }
+    }
+    if (modified) saveDevices();
   } else {
     fs.writeFileSync(DEVICES_FILE_PATH, JSON.stringify({}));
   }
@@ -117,6 +132,44 @@ function saveMcpDevices() {
   fs.writeFileSync(MCP_DEVICES_FILE_PATH, JSON.stringify(mcpDevices, null, 2));
 }
 
+const BUILTIN_MCP_ID = 'parrot-dashboard';
+const builtinTools = [
+  {
+    name: "server.get_pending_devices",
+    description: "Get a list of Xiaozhi or MCP devices that are waiting for approval on this server.",
+    parameters: { type: "object", properties: {}, additionalProperties: false }
+  },
+  {
+    name: "server.approve_device",
+    description: "Approve a pending Xiaozhi or MCP device by its ID so it can be used.",
+    parameters: { 
+      type: "object", 
+      properties: { 
+        id: { type: "string", description: "The ID of the device to approve." },
+        type: { type: "string", enum: ["xiaozhi", "mcp"], description: "The type of device." }
+      }, 
+      required: ["id", "type"],
+      additionalProperties: false 
+    }
+  },
+  {
+    name: "server.update_config",
+    description: "Update the AI configuration (backend, model, voice, system prompt) for the currently connected device. Note: Changes take effect on the next session connection.",
+    parameters: {
+      type: "object",
+      properties: {
+        llm_backend: { type: "string", enum: ["gemini", "qwen", "qwen_realtime", "qwen_omni"], description: "The AI backend to use." },
+        gemini_model: { type: "string", enum: (providersConfig.find(p => p.id === 'gemini')?.models.map(m => m.id) || []), description: "Valid Gemini models." },
+        qwen_model: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'qwen_realtime')?.models.map(m => m.id) || []), ...(providersConfig.find(p => p.id === 'qwen_omni')?.models.map(m => m.id) || [])])], description: "Valid Qwen models." },
+        gemini_voice: { type: "string", enum: (providersConfig.find(p => p.id === 'gemini')?.voices || []), description: "Valid Gemini voices." },
+        qwen_voice: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'qwen_realtime')?.voices || []), ...(providersConfig.find(p => p.id === 'qwen_omni')?.voices || [])])], description: "Valid Qwen voices." },
+        prompt: { type: "string", description: "The system prompt for the AI." }
+      },
+      additionalProperties: false
+    }
+  }
+];
+
 // MCP Server State
 const mcpClients = new Map(); // ws -> { id: string, tools: array }
 let mcpMessageId = 1;
@@ -136,12 +189,18 @@ function sendMcpRequest(ws, method, params) {
     logger.debug(`[MCP] Sending to ${info?.id || 'unknown'}: ${JSON.stringify(requestPayload)}`);
     ws.send(JSON.stringify(requestPayload));
 
+    const timeoutMs = method === 'tools/call' ? 5000 : 30000;
     setTimeout(() => {
       if (mcpCallbacks.has(id)) {
         mcpCallbacks.delete(id);
-        reject(new Error("Timeout waiting for MCP response after 30s"));
+        if (method === 'tools/call') {
+          logger.warn(`[MCP] Timeout for ${method} on ${info?.id || 'unknown'}, assuming success.`);
+          resolve({ result: { success: true, note: "Action dispatched, but no confirmation received (timeout)." } });
+        } else {
+          reject(new Error(`Timeout waiting for MCP response after ${timeoutMs/1000}s`));
+        }
       }
-    }, 30000);
+    }, timeoutMs);
   });
 }
 
@@ -234,6 +293,10 @@ app.get('/api/auth/status', requireAuth, (req, res) => {
   res.json({ authenticated: true });
 });
 
+app.get('/api/providers', requireAuth, (req, res) => {
+  res.json({ default_backend: LLM_BACKEND, providers: providersConfig });
+});
+
 app.get('/api/devices', requireAuth, (req, res) => {
   res.json(devices);
 });
@@ -282,6 +345,19 @@ app.post('/api/devices/:mac/config', requireAuth, (req, res) => {
 app.get('/api/mcp_devices', requireAuth, (req, res) => {
   // Merge live connected state with persisted state
   const response = {};
+  
+  // Inject the built-in dashboard pseudo-device
+  response[BUILTIN_MCP_ID] = {
+    status: 'approved',
+    name: 'Parrot Dashboard (Built-in)',
+    connected: true,
+    tools: builtinTools.map(t => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.parameters
+    }))
+  };
+
   for (const [id, data] of Object.entries(mcpDevices)) {
     response[id] = { ...data, connected: false, tools: [] };
   }
@@ -354,15 +430,22 @@ function handleOta(req, res) {
         isAllowed = true;
       }
     } else {
+      const pendingCount = Object.values(devices).filter(d => d.status === 'pending').length;
+      if (pendingCount >= 10) {
+        logger.warn(`[OTA] Max pending Xiaozhi devices reached. Rejecting ${macAddress}.`);
+        return res.status(403).json({ status: "error", message: "Max pending devices reached" });
+      }
+
       // Register as pending
       devices[macAddress] = {
         uuid,
         name: `Device ${macAddress}`,
         status: 'pending',
+        token: crypto.randomBytes(16).toString('hex'),
         prompt: "You are a helpful assistant. Keep responses short.",
         input_transcription: true,
         output_transcription: true,
-        enabled_mcp_devices: []
+        enabled_mcp_devices: [BUILTIN_MCP_ID]
       };
       saveDevices();
       logger.info(`[OTA] New device ${macAddress} registered as pending.`);
@@ -375,7 +458,7 @@ function handleOta(req, res) {
         timestamp: new Date().toISOString(),
         websocket: {
           url: WEBSOCKET_URL_FOR_ALLOWED_DEVICE,
-          token: CLIENT_AUTH_TOKEN
+          token: devices[macAddress].token || CLIENT_AUTH_TOKEN
         },
         server_time: { timestamp: Date.now(), timezone_offset: 28800 }
       };
@@ -440,6 +523,34 @@ server.on('upgrade', (request, socket, head) => {
 wssMcp.on('connection', (ws, req) => {
   const mcpUrl = new URL(req.url, `http://${req.headers.host}`);
   const clientId = mcpUrl.searchParams.get('device_id') || crypto.randomUUID();
+  const token = mcpUrl.searchParams.get('token');
+
+  let mcpDevice = mcpDevices[clientId];
+
+  if (!mcpDevice) {
+    const pendingCount = Object.values(mcpDevices).filter(d => d.status === 'pending').length;
+    if (pendingCount >= 10) {
+      logger.warn(`[MCP] Max pending MCP devices reached. Rejecting ${clientId}.`);
+      ws.close(1008, 'Max pending devices reached');
+      return;
+    }
+    
+    mcpDevice = {
+      name: clientId,
+      status: 'pending'
+    };
+    if (token) mcpDevice.token = token;
+    mcpDevices[clientId] = mcpDevice;
+    saveMcpDevices();
+  } else if (mcpDevice.token && token !== mcpDevice.token) {
+    logger.warn(`[MCP] Authentication failed for ${clientId}. Invalid token.`);
+    ws.close(1008, 'Unauthorized');
+    return;
+  } else if (!mcpDevice.token && token) {
+    // Legacy MCP device or previously unauthenticated device, lock it to the new token
+    mcpDevice.token = token;
+    saveMcpDevices();
+  }
 
   logger.info(`[MCP] New client connected: ${clientId} from ${req.socket.remoteAddress}`);
 
@@ -454,9 +565,15 @@ wssMcp.on('connection', (ws, req) => {
     try {
       const data = JSON.parse(message.toString());
       logger.debug(`[MCP] Received from ${clientId}: ${JSON.stringify(data)}`); // Added debug log
-      if (data.id && mcpCallbacks.has(data.id)) {
-        mcpCallbacks.get(data.id)(data);
-        mcpCallbacks.delete(data.id);
+
+      let mcpId = data.id;
+      if (mcpId !== undefined && typeof mcpId === 'string' && !isNaN(Number(mcpId))) {
+          mcpId = Number(mcpId);
+      }
+
+      if (mcpId !== undefined && mcpCallbacks.has(mcpId)) {
+        mcpCallbacks.get(mcpId)(data);
+        mcpCallbacks.delete(mcpId);
       } else if (data.method) {
         logger.info(`[MCP] Received unhandled method ${data.method} from ${clientId}`);
       }
@@ -471,7 +588,7 @@ wssMcp.on('connection', (ws, req) => {
     clearInterval(pingInterval);
   });
 
-  setupMcpClient(ws, clientId);
+  setupMcpClient(ws, clientId).catch(e => logger.error(`[MCP] Setup failed for ${clientId}: ${e.message}`));
 });
 
 // Xiaozhi Voice Session Logic
@@ -485,14 +602,25 @@ wssXiaozhi.on('connection', (ws, req) => {
 
   if (authHeader && authHeader.startsWith('Bearer ')) token = authHeader.substring(7);
 
-  if (token !== CLIENT_AUTH_TOKEN) {
-    logger.warn(`[${sessionId}] Authentication failed. Expected '${CLIENT_AUTH_TOKEN}'`);
+  const macAddress = req.headers['device-id'] || 'unknown';
+  let deviceConfig = devices[macAddress];
+  
+  if (!deviceConfig) {
+    logger.warn(`[${sessionId}] Authentication failed. Device ${macAddress} not registered.`);
+    ws.close(1008, 'Unauthorized');
+    return;
+  }
+  
+  const expectedToken = deviceConfig.token || CLIENT_AUTH_TOKEN;
+
+  if (token !== expectedToken) {
+    logger.warn(`[${sessionId}] Authentication failed. Expected '${expectedToken}'`);
     ws.close(1008, 'Unauthorized');
     return;
   }
 
-  const macAddress = req.headers['device-id'] || 'unknown';
-  const deviceConfig = devices[macAddress] || {
+  // Ensure default config fallback
+  deviceConfig = deviceConfig || {
     prompt: "You are a helpful assistant. Keep responses short.",
     input_transcription: true,
     output_transcription: true,
@@ -501,8 +629,7 @@ wssXiaozhi.on('connection', (ws, req) => {
 
   logger.info(`[${sessionId}] Authenticated successfully. Device: ${macAddress}`);
 
-  let geminiSession = null;
-  let qwenSession = null;
+  let provider = null;
   let isSpeaking = false;
   let modelDone = false;
   let audioBuffer = [];
@@ -532,19 +659,8 @@ wssXiaozhi.on('connection', (ws, req) => {
   const encoder = new prism.opus.Encoder({ frameSize: 1440, channels: 1, rate: 24000 });
 
   decoder.on('data', (pcmChunk) => {
-    if (geminiSession) {
-      geminiSession.sendRealtimeInput({
-        audio: {
-          mimeType: 'audio/pcm;rate=16000',
-          data: pcmChunk.toString('base64')
-        }
-      });
-    } else if (qwenSession && qwenSession.readyState === WebSocket.OPEN) {
-      qwenSession.send(JSON.stringify({
-        event_id: crypto.randomUUID(),
-        type: 'input_audio_buffer.append',
-        audio: pcmChunk.toString('base64')
-      }));
+    if (provider) {
+      provider.sendAudio(pcmChunk);
     } else {
       audioBuffer.push(pcmChunk);
     }
@@ -598,11 +714,15 @@ wssXiaozhi.on('connection', (ws, req) => {
     }
   }
 
-  async function startGeminiSession() {
+  async function startSession() {
     try {
       // Gather tools from approved and enabled MCP clients
-      const toolsMap = new Map(); // Use Map to deduplicate by name
+      const toolsMap = new Map();
       const enabledMcpSet = new Set(deviceConfig.enabled_mcp_devices || []);
+
+      if (enabledMcpSet.has(BUILTIN_MCP_ID)) {
+        for (const bt of builtinTools) toolsMap.set(bt.name, bt);
+      }
 
       for (const [mcpWs, info] of mcpClients.entries()) {
         const mcpStatus = mcpDevices[info.id]?.status;
@@ -613,9 +733,8 @@ wssXiaozhi.on('connection', (ws, req) => {
               name: t.name,
               description: t.description || 'No description provided.'
             };
-
             if (t.inputSchema && t.inputSchema.properties && Object.keys(t.inputSchema.properties).length > 0) {
-              toolDef.parameters = JSON.parse(JSON.stringify(t.inputSchema)); // Deep copy
+              toolDef.parameters = JSON.parse(JSON.stringify(t.inputSchema));
               if (toolDef.parameters.type && typeof toolDef.parameters.type === 'string') {
                 toolDef.parameters.type = toolDef.parameters.type.toLowerCase();
               }
@@ -625,352 +744,228 @@ wssXiaozhi.on('connection', (ws, req) => {
             } else {
                toolDef.parameters = { type: "object", properties: {}, additionalProperties: false };
             }
-
             toolsMap.set(toolDef.name, toolDef);
           }
         }
       }
 
-      const geminiTools = Array.from(toolsMap.values());
+      const mcpTools = Array.from(toolsMap.values());
+      const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
+      
+      let config = { ...deviceConfig };
+      config.prompt = deviceConfig.prompt;
+      config.input_transcription = deviceConfig.input_transcription;
+      config.output_transcription = deviceConfig.output_transcription;
 
-      const sessionConfig = {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: {
-              voiceName: deviceConfig.gemini_voice || GEMINI_VOICE
-            }
+      let newProvider;
+      if (activeBackend === 'gemini') {
+          config.apiKey = GEMINI_API_KEY;
+          config.model = deviceConfig.gemini_model || GEMINI_MODEL;
+          config.voice = deviceConfig.gemini_voice || GEMINI_VOICE;
+          newProvider = new GeminiProvider(config);
+      } else if (activeBackend === 'qwen' || activeBackend === 'qwen_realtime' || activeBackend === 'qwen_omni') {
+          config.apiKey = DASHSCOPE_API_KEY;
+          config.model = deviceConfig.qwen_model || QWEN_MODEL;
+          config.voice = deviceConfig.qwen_voice || QWEN_VOICE;
+          
+          if (activeBackend === 'qwen_realtime' || (activeBackend === 'qwen' && config.model.includes('realtime'))) {
+              newProvider = new QwenRealtimeProvider(config);
+          } else {
+              newProvider = new QwenOmniProvider(config);
           }
-        },
-        systemInstruction: {
-          parts: [{ text: deviceConfig.prompt }]
-        }
-      };
-
-      if (geminiTools.length > 0) {
-        sessionConfig.tools = [{ functionDeclarations: geminiTools }];
-        sessionConfig.toolConfig = {
-          functionCallingConfig: {
-            mode: "AUTO"
-          }
-        };
       }
 
-      if (deviceConfig.input_transcription) sessionConfig.inputAudioTranscription = {};
-      if (deviceConfig.output_transcription) sessionConfig.outputAudioTranscription = {};
-
-      logger.info(`[${sessionId}] Starting Gemini session with ${geminiTools.length} tools.`);
-      logger.debug(`[${sessionId}] Gemini session config: ${JSON.stringify(sessionConfig)}`);
-
-      geminiSession = await ai.live.connect({
-        model: deviceConfig.gemini_model || GEMINI_MODEL,
-        config: sessionConfig,
-        callbacks: {
-          onopen: () => {
-            logger.info(`[${sessionId}] Connected to Gemini Live API`);
-            if (ws.readyState === WebSocket.OPEN) {
+      newProvider.on('connected', () => {
+          logger.info(`[${sessionId}] Connected to ${activeBackend} API`);
+          if (ws.readyState === WebSocket.OPEN) {
               const payload = { type: 'listen', state: 'start', session_id: sessionId };
-              logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
               ws.send(JSON.stringify(payload));
-            }
-            // Use nextTick to ensure geminiSession is assigned before processing buffer
-            process.nextTick(() => {
-              if (geminiSession && audioBuffer.length > 0) {
-                logger.info(`[${sessionId}] Sending ${audioBuffer.length} buffered audio chunks to Gemini`);
-                audioBuffer.forEach(chunk => {
-                  try {
-                    geminiSession.sendRealtimeInput({
-                      audio: {
-                        mimeType: 'audio/pcm;rate=16000',
-                        data: chunk.toString('base64')
-                      }
-                    });
-                  } catch (e) {
-                    logger.error(`[${sessionId}] Error sending buffered audio: ${e.message}`);
-                  }
-                });
-                audioBuffer.length = 0;
-              }
-            });
-          },
-          onmessage: async (response) => {
-            if (!geminiSession) return;
-            if (response.serverContent) {
-              const content = response.serverContent;
-              const sanitizedContent = JSON.parse(JSON.stringify(content)); // Deep copy
-              if (sanitizedContent.modelTurn && sanitizedContent.modelTurn.parts) {
-                const audioOnlyParts = sanitizedContent.modelTurn.parts.every(part => part.inlineData);
-                if (audioOnlyParts) {
-                  // If all parts are audio, remove the entire modelTurn to not log any audio related info
-                  delete sanitizedContent.modelTurn;
-                } else {
-                  // If there are non-audio parts, redact only the audio data
-                  sanitizedContent.modelTurn.parts = sanitizedContent.modelTurn.parts.map(part => {
-                    if (part.inlineData) {
-                      return { ...part, inlineData: '[AUDIO_DATA_REDACTED]' };
-                    }
-                    return part;
-                  });
-                }
-              }
-              logger.debug(`[${sessionId}] Gemini sent serverContent: ${JSON.stringify(sanitizedContent)}`);
-
-              // Audio Handle
-              if (content.modelTurn?.parts) {
-                if (!isSpeaking) {
-                  isSpeaking = true;
-                  ws.send(JSON.stringify({ type: 'tts', state: 'start', session_id: sessionId }));
-                }
-                for (const part of content.modelTurn.parts) {
-                  if (part.inlineData) {
-                    encoder.write(Buffer.from(part.inlineData.data, 'base64'));
-                  }
-                }
-              }
-
-              if (content.inputTranscription && deviceConfig.input_transcription) {
-                const payload = { type: 'stt', session_id: sessionId, text: content.inputTranscription.text };
-                logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
-                ws.send(JSON.stringify(payload));
-              }
-              if (content.outputTranscription && deviceConfig.output_transcription) {
-                outputTranscriptionBuffer += content.outputTranscription.text;
-                let match;
-                while ((match = outputTranscriptionBuffer.match(/.*?([。！？.!?\n]+)/))) {
-                  const textToSend = match[0];
-                  outputTranscriptionBuffer = outputTranscriptionBuffer.substring(textToSend.length);
-                  queueTtsText(textToSend);
-                }
-                if (outputTranscriptionBuffer.length >= 120) {
-                  queueTtsText(outputTranscriptionBuffer);
-                  outputTranscriptionBuffer = '';
-                }
-              }
-              if (content.turnComplete) {
-                if (outputTranscriptionBuffer.length > 0 && deviceConfig.output_transcription) {
-                  queueTtsText(outputTranscriptionBuffer);
-                  outputTranscriptionBuffer = '';
-                }
-                modelDone = true;
-              }
-              if (content.interrupted) {
-                const payload = { type: 'abort', session_id: sessionId, reason: 'interrupted' };
-                logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
-                ws.send(JSON.stringify(payload));
-                isSpeaking = false;
-                modelDone = false;
-                audioOutputQueue = [];
-                ttsTextQueue = [];
-              }
-            }
-
-            // Function Call Handle (Live API puts toolCall as a top-level field)
-            if (response.toolCall?.functionCalls) {
-              const toolCall = response.toolCall;
-              logger.debug(`[${sessionId}] Gemini sent toolCall: ${JSON.stringify(toolCall)}`);
-              for (const call of toolCall.functionCalls) {
-                logger.info(`[${sessionId}] Gemini requested tool call: ${call.name}`);
-
-                // Find which MCP client has this tool (and is approved/enabled)
-                let targetWs = null;
-                for (const [mcpWs, info] of mcpClients.entries()) {
-                  const mcpStatus = mcpDevices[info.id]?.status;
-                  if (mcpStatus === 'approved' && enabledMcpSet.has(info.id)) {
-                    if (info.tools.find(t => t.name === call.name)) {
-                      targetWs = mcpWs;
-                      break;
-                    }
-                  }
-                }
-
-                if (targetWs) {
-                  try {
-                    const mcpArgs = call.args || {};
-                    logger.info(`[${sessionId}] Routing tool call ${call.name} to MCP client. Args: ${JSON.stringify(mcpArgs)}`);
-                    sendMcpRequest(targetWs, 'tools/call', { name: call.name, arguments: mcpArgs })
-                      .then(mcpRes => {
-                        if (!geminiSession) return;
-                        const resultText = mcpRes.result?.content?.[0]?.text || JSON.stringify(mcpRes.result || { success: true });
-                        logger.info(`[${sessionId}] Tool call ${call.name} succeeded. Returning result to Gemini: ${resultText}`);
-                        geminiSession.sendToolResponse({
-                          functionResponses: [{
-                            id: call.id,
-                            name: call.name,
-                            response: { result: resultText }
-                          }]
-                        });
-                      })
-                      .catch(e => {
-                        if (!geminiSession) return;
-                        logger.error(`[${sessionId}] Tool call failed: ${e.message}`);
-                        geminiSession.sendToolResponse({
-                          functionResponses: [{
-                            id: call.id,
-                            name: call.name,
-                            response: { error: e.message }
-                          }]
-                        });
-                      });
-                  } catch (e) {}
-                } else {
-                  logger.warn(`[${sessionId}] Tool ${call.name} requested but no valid MCP client has it.`);
-                  if (geminiSession) {
-                    geminiSession.sendToolResponse({
-                      functionResponses: [{
-                        id: call.id,
-                        name: call.name,
-                        response: { error: "Tool not available." }
-                      }]
-                    });
-                  }
-                }
-              }
-            }
-          },
-          onerror: (error) => {
-            logger.error(`[${sessionId}] Gemini error:`, error);
-            if (ws.readyState === WebSocket.OPEN) {
-              const payload = { type: 'error', session_id: sessionId, data: error.message };
-              logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
-              ws.send(JSON.stringify(payload));
-            }
-          },
-          onclose: () => {
-            logger.info(`[${sessionId}] Gemini session closed`);
-            geminiSession = null;
           }
-        }
-      });
-    } catch (err) {
-      logger.error(`[${sessionId}] Failed to connect to Gemini:`, err);
-      ws.close();
-    }
-  }
-
-  function startQwenSession() {
-    try {
-      logger.info(`[${sessionId}] Starting Qwen3 session.`);
-
-      const modelToUse = deviceConfig.qwen_model || QWEN_MODEL;
-      const qwenUrl = `wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model=${modelToUse}`;
-      qwenSession = new WebSocket(qwenUrl, {
-        headers: {
-          'Authorization': `Bearer ${DASHSCOPE_API_KEY}`
-        }
+          
+          provider = newProvider;
+          
+          process.nextTick(() => {
+              if (provider && audioBuffer.length > 0) {
+                  audioBuffer.forEach(chunk => provider.sendAudio(chunk));
+                  audioBuffer.length = 0;
+              }
+          });
       });
 
-      qwenSession.on('open', () => {
-        logger.info(`[${sessionId}] Connected to Qwen3 Realtime API`);
-        if (ws.readyState === WebSocket.OPEN) {
-          const payload = { type: 'listen', state: 'start', session_id: sessionId };
-          logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
-          ws.send(JSON.stringify(payload));
-        }
-
-        process.nextTick(() => {
-          if (qwenSession && qwenSession.readyState === WebSocket.OPEN && audioBuffer.length > 0) {
-            logger.info(`[${sessionId}] Sending ${audioBuffer.length} buffered audio chunks to Qwen`);
-            audioBuffer.forEach(chunk => {
-              try {
-                qwenSession.send(JSON.stringify({
-                  event_id: crypto.randomUUID(),
-                  type: 'input_audio_buffer.append',
-                  audio: chunk.toString('base64')
-                }));
-              } catch (e) {
-                logger.error(`[${sessionId}] Error sending buffered audio: ${e.message}`);
-              }
-            });
-            audioBuffer.length = 0;
-          }
-        });
-      });
-
-      qwenSession.on('message', async (message) => {
-        try {
-          const response = JSON.parse(message.toString());
-          if (!['response.audio.delta', 'response.audio_transcript.delta'].includes(response.type)) {
-            logger.debug(`[${sessionId}] Qwen Event: ${response.type} ${response.item?.type || ''}`);
-          }
-
-          if (response.type === 'session.created') {
-            const sessionUpdate = {
-              type: "session.update",
-              session: {
-                modalities: ["text", "audio"],
-                voice: deviceConfig.qwen_voice || QWEN_VOICE,
-                input_audio_format: "pcm16",
-                output_audio_format: "pcm24",
-                instructions: `${deviceConfig.prompt}`,
-                input_audio_transcription: { model: "gummy-realtime-v1" },
-                turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 800 }
-              }
-            };
-            logger.info(`[${sessionId}] Sending session.update for Qwen3 session.`);
-            qwenSession.send(JSON.stringify(sessionUpdate));
-          }
-
-          if (response.type === 'response.audio.delta') {
-            if (!isSpeaking) {
+      newProvider.on('audio_output', (audioBuf) => {
+          if (!isSpeaking) {
               isSpeaking = true;
               ws.send(JSON.stringify({ type: 'tts', state: 'start', session_id: sessionId }));
-            }
-            if (response.delta) {
-              encoder.write(Buffer.from(response.delta, 'base64'));
-            }
-          } else if (response.type === 'response.audio.done') {
-            modelDone = true;
-          } else if (response.type === 'response.done') {
-            modelDone = true;
-          } else if (response.type === 'response.audio_transcript.delta') {
-            if (deviceConfig.output_transcription && response.delta) {
-              outputTranscriptionBuffer += response.delta;
-              let match;
-              while ((match = outputTranscriptionBuffer.match(/.*?([。！？.!?\n]+)/))) {
-                const textToSend = match[0];
-                outputTranscriptionBuffer = outputTranscriptionBuffer.substring(textToSend.length);
-                queueTtsText(textToSend);
-              }
-              if (outputTranscriptionBuffer.length >= 120) {
-                queueTtsText(outputTranscriptionBuffer);
-                outputTranscriptionBuffer = '';
-              }
-            }
-          } else if (response.type === 'response.audio_transcript.done') {
-            if (deviceConfig.output_transcription) {
-              if (outputTranscriptionBuffer.length > 0) {
-                  queueTtsText(outputTranscriptionBuffer);
-                  outputTranscriptionBuffer = '';
-              }
-            }
-          } else if (response.type === 'input_audio_buffer.cleared') {
-            isSpeaking = false;
-            modelDone = false;
-            audioOutputQueue = [];
-            ttsTextQueue = [];
-            const payload = { type: 'abort', session_id: sessionId, reason: 'interrupted' };
-            logger.debug(`[${sessionId}] Sending to Xiaozhi: ${JSON.stringify(payload)}`);
-            ws.send(JSON.stringify(payload));
-          } else if (response.type === 'session.error' || response.type === 'error') {
-            logger.error(`[${sessionId}] Qwen API error: ${JSON.stringify(response)}`);
-            ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: response.error?.message || 'Qwen Error' }));
           }
-        } catch (e) {
-          logger.error(`[${sessionId}] Failed to parse Qwen message: ${e.message}`);
-        }
+          encoder.write(audioBuf);
       });
 
-      qwenSession.on('close', () => {
-        logger.info(`[${sessionId}] Qwen session closed`);
-        qwenSession = null;
+      newProvider.on('input_transcription', (text) => {
+          ws.send(JSON.stringify({ type: 'stt', session_id: sessionId, text }));
       });
 
-      qwenSession.on('error', (error) => {
-        logger.error(`[${sessionId}] Qwen error:`, error);
-        ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: error.message }));
+      newProvider.on('output_transcription', (text) => {
+          outputTranscriptionBuffer += text;
+          let match;
+          while ((match = outputTranscriptionBuffer.match(/.*?([。！？.!?\n]+)/))) {
+              const textToSend = match[0];
+              outputTranscriptionBuffer = outputTranscriptionBuffer.substring(textToSend.length);
+              queueTtsText(textToSend);
+          }
+          if (outputTranscriptionBuffer.length >= 120) {
+              queueTtsText(outputTranscriptionBuffer);
+              outputTranscriptionBuffer = '';
+          }
       });
+
+      newProvider.on('turn_complete', () => {
+          if (outputTranscriptionBuffer.length > 0 && deviceConfig.output_transcription) {
+              queueTtsText(outputTranscriptionBuffer);
+              outputTranscriptionBuffer = '';
+          }
+          modelDone = true;
+      });
+
+      newProvider.on('interrupted', () => {
+          if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'abort', session_id: sessionId, reason: 'interrupted' }));
+              if (isSpeaking) {
+                  ws.send(JSON.stringify({ type: 'tts', state: 'stop', session_id: sessionId }));
+              }
+          }
+          isSpeaking = false;
+          modelDone = false;
+          audioOutputQueue = [];
+          ttsTextQueue = [];
+      });
+
+      newProvider.on('tool_call', (callId, name, args) => {
+          logger.info(`[${sessionId}] Provider requested tool call: ${name}`);
+
+          if (name === 'server.get_pending_devices') {
+              const pendingDevices = [];
+              for (const [mac, data] of Object.entries(devices)) {
+                  if (data.status === 'pending') pendingDevices.push({ id: mac, type: 'xiaozhi', name: data.name || mac });
+              }
+              for (const [id, data] of Object.entries(mcpDevices)) {
+                  if (data.status === 'pending') pendingDevices.push({ id, type: 'mcp', name: data.name || id });
+              }
+              if (provider) provider.sendToolResponse(callId, name, JSON.stringify({ pending_devices: pendingDevices }));
+              return;
+          }
+
+          if (name === 'server.approve_device') {
+              if (args.type === 'xiaozhi' && devices[args.id]) {
+                  devices[args.id].status = 'approved';
+                  saveDevices();
+                  if (provider) provider.sendToolResponse(callId, name, JSON.stringify({ success: true, note: `Xiaozhi device ${args.id} approved.` }));
+              } else if (args.type === 'mcp' && mcpDevices[args.id]) {
+                  mcpDevices[args.id].status = 'approved';
+                  saveMcpDevices();
+
+                  // Trigger tool discovery for the newly approved MCP device if it's currently connected
+                  for (const [ws, info] of mcpClients.entries()) {
+                      if (info.id === args.id) {
+                          sendMcpRequest(ws, 'tools/list', {}).then(res => {
+                              if (res.result && res.result.tools) info.tools = res.result.tools;
+                          }).catch(() => {});
+                      }
+                  }
+
+                  if (provider) provider.sendToolResponse(callId, name, JSON.stringify({ success: true, note: `MCP device ${args.id} approved.` }));
+              } else {
+                  if (provider) provider.sendToolResponse(callId, name, JSON.stringify({ error: `Device ${args.id} of type ${args.type} not found or not pending.` }));
+              }
+              return;
+          }
+
+          if (name === 'server.update_config') {
+              let updated = false;
+              const toolDef = builtinTools.find(t => t.name === 'server.update_config');
+              
+              const validate = (param, value) => {
+                  const allowed = toolDef.parameters.properties[param]?.enum;
+                  if (allowed && !allowed.includes(value)) {
+                      return `Invalid value for ${param}: ${value}. Allowed: ${allowed.join(', ')}`;
+                  }
+                  return null;
+              };
+
+              let error;
+              if (args.llm_backend && (error = validate('llm_backend', args.llm_backend))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
+              if (args.gemini_model && (error = validate('gemini_model', args.gemini_model))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
+              if (args.qwen_model && (error = validate('qwen_model', args.qwen_model))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
+              if (args.gemini_voice && (error = validate('gemini_voice', args.gemini_voice))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
+              if (args.qwen_voice && (error = validate('qwen_voice', args.qwen_voice))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
+
+              if (args.llm_backend && args.llm_backend !== devices[macAddress].llm_backend) {
+                  devices[macAddress].llm_backend = args.llm_backend;
+                  delete devices[macAddress].gemini_model;
+                  delete devices[macAddress].qwen_model;
+                  delete devices[macAddress].gemini_voice;
+                  delete devices[macAddress].qwen_voice;
+                  updated = true;
+              }
+              
+              if (args.gemini_model) { devices[macAddress].gemini_model = args.gemini_model; updated = true; }
+              if (args.qwen_model) { devices[macAddress].qwen_model = args.qwen_model; updated = true; }
+              if (args.gemini_voice) { devices[macAddress].gemini_voice = args.gemini_voice; updated = true; }
+              if (args.qwen_voice) { devices[macAddress].qwen_voice = args.qwen_voice; updated = true; }
+              if (args.prompt) { devices[macAddress].prompt = args.prompt; updated = true; }
+
+              if (updated) {
+                  saveDevices();
+                  if (provider) provider.sendToolResponse(callId, name, JSON.stringify({ success: true, note: "Configuration updated successfully. The changes will take effect the next time a session is started." }));
+              } else {
+                  if (provider) provider.sendToolResponse(callId, name, JSON.stringify({ note: "No changes provided." }));
+              }
+              return;
+          }
+
+          let targetWs = null;
+          for (const [mcpWs, info] of mcpClients.entries()) {              const mcpStatus = mcpDevices[info.id]?.status;
+              if (mcpStatus === 'approved' && enabledMcpSet.has(info.id)) {
+                  if (info.tools.find(t => t.name === name)) {
+                      targetWs = mcpWs;
+                      break;
+                  }
+              }
+          }
+
+          if (targetWs) {
+              sendMcpRequest(targetWs, 'tools/call', { name, arguments: args })
+                  .then(mcpRes => {
+                      if (!provider) return;
+                      const resultText = mcpRes.result?.content?.[0]?.text || JSON.stringify(mcpRes.result || { success: true });
+                      logger.info(`[${sessionId}] Tool call ${name} succeeded.`);
+                      provider.sendToolResponse(callId, name, resultText);
+                  })
+                  .catch(e => {
+                      if (!provider) return;
+                      logger.error(`[${sessionId}] Tool call failed: ${e.message}`);
+                      provider.sendToolResponse(callId, name, JSON.stringify({ error: e.message }));
+                  });
+          } else {
+              logger.warn(`[${sessionId}] Tool ${name} requested but no valid MCP client has it.`);
+              if (provider) provider.sendToolResponse(callId, name, JSON.stringify({ error: "Tool not available." }));
+          }
+      });
+
+      newProvider.on('error', (err) => {
+          logger.error(`[${sessionId}] Provider error:`, err);
+          ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: err.message }));
+      });
+
+      newProvider.on('close', () => {
+          logger.info(`[${sessionId}] Provider session closed`);
+          provider = null;
+      });
+
+      logger.info(`[${sessionId}] Starting ${activeBackend} session with ${mcpTools.length} tools.`);
+      await newProvider.connect(mcpTools);
+      
     } catch (err) {
-      logger.error(`[${sessionId}] Failed to connect to Qwen:`, err);
+      logger.error(`[${sessionId}] Failed to connect:`, err);
       ws.close();
     }
   }
@@ -985,10 +980,15 @@ wssXiaozhi.on('connection', (ws, req) => {
 
         // Handle MCP JSON-RPC responses (can be top-level or wrapped in a Xiaozhi message)
         const possibleMcpData = data.payload || data;
-        if (possibleMcpData.id && mcpCallbacks.has(possibleMcpData.id)) {
-          logger.debug(`[${sessionId}] Found matching MCP callback for ID ${possibleMcpData.id}`);
-          mcpCallbacks.get(possibleMcpData.id)(possibleMcpData);
-          mcpCallbacks.delete(possibleMcpData.id);
+        let mcpId = possibleMcpData.id;
+        if (mcpId !== undefined && typeof mcpId === 'string' && !isNaN(Number(mcpId))) {
+            mcpId = Number(mcpId);
+        }
+
+        if (mcpId !== undefined && mcpCallbacks.has(mcpId)) {
+          logger.debug(`[${sessionId}] Found matching MCP callback for ID ${mcpId}`);
+          mcpCallbacks.get(mcpId)(possibleMcpData);
+          mcpCallbacks.delete(mcpId);
           return;
         }
 
@@ -1009,14 +1009,15 @@ wssXiaozhi.on('connection', (ws, req) => {
               const setupPromise = new Promise((innerResolve) => {
                 setTimeout(() => {
                   logger.info(`[${sessionId}] Initializing MCP for device ${macAddress}`);
-                  setupMcpClient(ws, macAddress, true).finally(innerResolve);
+                  setupMcpClient(ws, macAddress, true).catch(e => logger.error(`[MCP] Setup failed for ${macAddress}: ${e.message}`)).finally(innerResolve);
                 }, 1000);
               });
 
               const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
-              if (activeBackend === 'qwen') {
-                // Skip tool wait timeout if we're using qwen since it doesn't support them right now
-                logger.info(`[${sessionId}] Skipping tool discovery wait for Qwen backend.`);
+              const qwenModel = deviceConfig.qwen_model || QWEN_MODEL;
+              if (activeBackend === 'qwen_realtime' || (activeBackend === 'qwen' && qwenModel.includes('realtime'))) {
+                // Skip tool wait timeout if we're using qwen realtime since it doesn't support them right now
+                logger.info(`[${sessionId}] Skipping tool discovery wait for Qwen Realtime backend.`);
                 resolve();
               } else {
                 const timeoutPromise = new Promise((innerResolve) => {
@@ -1031,20 +1032,34 @@ wssXiaozhi.on('connection', (ws, req) => {
             });
 
             mcpWaitPromise.finally(() => {
-              if (!geminiSession && !qwenSession) {
+              if (!provider) {
                 logger.info(`[${sessionId}] Proceeding to start LLM session.`);
                 const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
-                activeBackend === 'qwen' ? startQwenSession() : startGeminiSession();
+                startSession();
               }
             });
           } else {
-            if (!geminiSession && !qwenSession) {
+            if (!provider) {
               const activeBackend = deviceConfig.llm_backend || LLM_BACKEND;
-              activeBackend === 'qwen' ? startQwenSession() : startGeminiSession();
+              startSession();
             }
           }
-        } else if (data.type === 'listen' && data.state === 'start' && !geminiSession && !qwenSession) {
+        } else if (data.type === 'listen' && data.state === 'start' && !provider) {
           // You can also start gemini session strictly when client sends listen: start
+        } else if (data.type === 'abort') {
+          logger.info(`[${sessionId}] Received abort from device. Clearing queues.`);
+          if (provider && typeof provider.interrupt === 'function') {
+            provider.interrupt();
+          }
+          if (isSpeaking) {
+            isSpeaking = false;
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'tts', state: 'stop', session_id: sessionId }));
+            }
+          }
+          modelDone = false;
+          audioOutputQueue = [];
+          ttsTextQueue = [];
         }
       } catch (e) {}
     }

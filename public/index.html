@@ -110,88 +110,13 @@
             <textarea id="configPrompt"></textarea>
         </div>
         
-        <div class="form-group">
+                <div class="form-group">
             <label for="configBackend">LLM Backend (Overrides Default)</label>
             <select id="configBackend" onchange="handleBackendChange()" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white;">
                 <option value="">Default (from .env)</option>
-                <option value="gemini">Google Gemini</option>
-                <option value="qwen">Alibaba Qwen</option>
             </select>
         </div>
-        <div class="form-group">
-            <label for="configGeminiModel">Gemini Model Override (Optional)</label>
-            <input type="text" id="configGeminiModel" placeholder="e.g. gemini-2.5-flash-native-audio-preview-12-2025">
-        </div>
-        <div class="form-group">
-            <label for="configQwenModel">Qwen Model Override (Optional)</label>
-            <input type="text" id="configQwenModel" placeholder="e.g. qwen3-omni-flash-realtime">
-        </div>
-        <div class="form-group">
-            <label for="configGeminiVoice">Gemini Voice Override (Optional)</label>
-            <select id="configGeminiVoice" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white;">
-                <option value="">Default (from .env)</option>
-                <option value="Aoede">Aoede</option>
-                <option value="Puck">Puck</option>
-                <option value="Charon">Charon</option>
-                <option value="Kore">Kore</option>
-                <option value="Fenrir">Fenrir</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label for="configQwenVoice">Qwen Voice Override (Optional)</label>
-            <select id="configQwenVoice" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white;">
-                <option value="">Default (from .env)</option>
-                <option value="Cherry">Cherry</option>
-                <option value="Serena">Serena</option>
-                <option value="Ethan">Ethan</option>
-                <option value="Chelsie">Chelsie</option>
-                <option value="Momo">Momo</option>
-                <option value="Vivian">Vivian</option>
-                <option value="Moon">Moon</option>
-                <option value="Maia">Maia</option>
-                <option value="Kai">Kai</option>
-                <option value="Nofish">Nofish</option>
-                <option value="Bella">Bella</option>
-                <option value="Jennifer">Jennifer</option>
-                <option value="Ryan">Ryan</option>
-                <option value="Katerina">Katerina</option>
-                <option value="Aiden">Aiden</option>
-                <option value="Eldric Sage">Eldric Sage</option>
-                <option value="Mia">Mia</option>
-                <option value="Mochi">Mochi</option>
-                <option value="Bellona">Bellona</option>
-                <option value="Vincent">Vincent</option>
-                <option value="Bunny">Bunny</option>
-                <option value="Neil">Neil</option>
-                <option value="Elias">Elias</option>
-                <option value="Arthur">Arthur</option>
-                <option value="Nini">Nini</option>
-                <option value="Ebona">Ebona</option>
-                <option value="Seren">Seren</option>
-                <option value="Pip">Pip</option>
-                <option value="Stella">Stella</option>
-                <option value="Bodega">Bodega</option>
-                <option value="Sonrisa">Sonrisa</option>
-                <option value="Alek">Alek</option>
-                <option value="Dolce">Dolce</option>
-                <option value="Sohee">Sohee</option>
-                <option value="Ono Anna">Ono Anna</option>
-                <option value="Lenn">Lenn</option>
-                <option value="Emilien">Emilien</option>
-                <option value="Andre">Andre</option>
-                <option value="Radio Gol">Radio Gol</option>
-                <option value="Shanghai - Jada">Shanghai - Jada</option>
-                <option value="Beijing - Dylan">Beijing - Dylan</option>
-                <option value="Nanjing - Li">Nanjing - Li</option>
-                <option value="Shaanxi - Marcus">Shaanxi - Marcus</option>
-                <option value="Southern Min - Roy">Southern Min - Roy</option>
-                <option value="Tianjin - Peter">Tianjin - Peter</option>
-                <option value="Sichuan - Sunny">Sichuan - Sunny</option>
-                <option value="Sichuan - Eric">Sichuan - Eric</option>
-                <option value="Cantonese - Rocky">Cantonese - Rocky</option>
-                <option value="Cantonese - Kiki">Cantonese - Kiki</option>
-            </select>
-        </div>
+        <div id="dynamicConfigFields"></div>
         
         <div class="checkbox-group">
             <input type="checkbox" id="configInputTrans">
@@ -231,6 +156,7 @@
     let currentDevices = {};
     let currentMcpDevices = {};
     let editingMac = null;
+    let providerConfigData = null;
 
     async function checkAuth() {
         const res = await fetch('/api/auth/status');
@@ -280,6 +206,21 @@
     }
 
     async function loadData() {
+        if (!providerConfigData) {
+            const resProv = await fetch('/api/providers');
+            if (resProv.ok) {
+                providerConfigData = await resProv.json();
+                const backendSelect = document.getElementById('configBackend');
+                backendSelect.innerHTML = '<option value="">Default (' + providerConfigData.default_backend + ')</option>';
+                providerConfigData.providers.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.id;
+                    opt.textContent = p.name;
+                    backendSelect.appendChild(opt);
+                });
+            }
+        }
+        
         const resDev = await fetch('/api/devices');
         if (resDev.ok) currentDevices = await resDev.json();
         
@@ -412,7 +353,17 @@
         const container = document.getElementById('mcpCheckboxes');
         const checkboxes = container.querySelectorAll('input[type="checkbox"]');
         
-        if (backend === 'qwen') {
+        let activeBackend = backend;
+        if (!activeBackend && providerConfigData) activeBackend = providerConfigData.default_backend;
+
+        let supportsMcp = true;
+        let providerInfo = null;
+        if (providerConfigData) {
+            providerInfo = providerConfigData.providers.find(p => p.id === activeBackend);
+            if (providerInfo) supportsMcp = providerInfo.supportsMcp;
+        }
+        
+        if (!supportsMcp) {
             checkboxes.forEach(chk => {
                 chk.checked = false;
                 chk.disabled = true;
@@ -421,6 +372,81 @@
             checkboxes.forEach(chk => {
                 chk.disabled = false;
             });
+        }
+
+        // Render dynamic fields
+        const dynamicFields = document.getElementById('dynamicConfigFields');
+        dynamicFields.innerHTML = '';
+        
+        if (providerInfo) {
+            // Model Select
+            const modelDiv = document.createElement('div');
+            modelDiv.className = 'form-group';
+            modelDiv.innerHTML = '<label for="configModel">Model Override (Optional)</label>';
+            const modelSelect = document.createElement('select');
+            modelSelect.id = 'configModel';
+            modelSelect.style = 'width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white;';
+            modelSelect.innerHTML = '<option value="">Default (from .env)</option>';
+            providerInfo.models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name;
+                modelSelect.appendChild(opt);
+            });
+            modelDiv.appendChild(modelSelect);
+            dynamicFields.appendChild(modelDiv);
+
+            // Voice Select
+            const voiceDiv = document.createElement('div');
+            voiceDiv.className = 'form-group';
+            voiceDiv.innerHTML = '<label for="configVoice">Voice Override (Optional)</label>';
+            const voiceSelect = document.createElement('select');
+            voiceSelect.id = 'configVoice';
+            voiceSelect.style = 'width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; background: white;';
+            voiceSelect.innerHTML = '<option value="">Default (from .env)</option>';
+            providerInfo.voices.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v;
+                opt.textContent = v;
+                voiceSelect.appendChild(opt);
+            });
+            voiceDiv.appendChild(voiceSelect);
+            dynamicFields.appendChild(voiceDiv);
+        }
+
+        if (editingMac && currentDevices[editingMac]) {
+            const dev = currentDevices[editingMac];
+            const modelField = document.getElementById('configModel');
+            const voiceField = document.getElementById('configVoice');
+            
+            if (modelField && voiceField) {
+                let targetModel = "";
+                let targetVoice = "";
+
+                if (activeBackend === 'gemini') {
+                    targetModel = dev.gemini_model || "";
+                    targetVoice = dev.gemini_voice || "";
+                } else if (activeBackend.startsWith('qwen')) {
+                    targetModel = dev.qwen_model || "";
+                    targetVoice = dev.qwen_voice || "";
+                }
+
+                if (targetModel && !Array.from(modelField.options).some(opt => opt.value === targetModel)) {
+                    const opt = document.createElement('option');
+                    opt.value = targetModel;
+                    opt.textContent = targetModel + " (Custom)";
+                    modelField.appendChild(opt);
+                }
+                modelField.value = targetModel;
+
+                if (targetVoice && !Array.from(voiceField.options).some(opt => opt.value === targetVoice)) {
+                    const opt = document.createElement('option');
+                    opt.value = targetVoice;
+                    opt.textContent = targetVoice + " (Custom)";
+                    voiceField.appendChild(opt);
+                }
+                voiceField.value = targetVoice;
+            }
         }
     }
 
@@ -431,13 +457,12 @@
         document.getElementById('configMacDisplay').textContent = mac;
         document.getElementById('configPrompt').value = dev.prompt || "You are a helpful assistant. Keep responses short.";
         document.getElementById('configBackend').value = dev.llm_backend || "";
-        document.getElementById('configGeminiModel').value = dev.gemini_model || "";
-        document.getElementById('configQwenModel').value = dev.qwen_model || "";
-        document.getElementById('configGeminiVoice').value = dev.gemini_voice || "";
-        document.getElementById('configQwenVoice').value = dev.qwen_voice || "";
         document.getElementById('configInputTrans').checked = dev.input_transcription !== false;
         document.getElementById('configOutputTrans').checked = dev.output_transcription !== false;
-        
+
+        // Render dynamic fields first (this now also restores values)
+        handleBackendChange();
+
         // Populate MCP checkboxes
         const mcpContainer = document.getElementById('mcpCheckboxes');
         mcpContainer.innerHTML = '';
@@ -469,7 +494,6 @@
         }
         
         document.getElementById('noMcpMsg').style.display = hasApprovedMcp ? 'none' : 'block';
-        handleBackendChange(); // Ensure checkboxes are correctly disabled/enabled based on loaded backend
         document.getElementById('configModal').classList.remove('hidden');
     }
 
@@ -487,18 +511,36 @@
         checkboxes.forEach(chk => {
             if (chk.checked) enabledMcp.push(chk.value);
         });
+
+        const dev = currentDevices[editingMac] || {};
         
         const payload = {
             prompt: document.getElementById('configPrompt').value,
             llm_backend: document.getElementById('configBackend').value,
-            gemini_model: document.getElementById('configGeminiModel').value,
-            qwen_model: document.getElementById('configQwenModel').value,
-            gemini_voice: document.getElementById('configGeminiVoice').value,
-            qwen_voice: document.getElementById('configQwenVoice').value,
             input_transcription: document.getElementById('configInputTrans').checked,
             output_transcription: document.getElementById('configOutputTrans').checked,
-            enabled_mcp_devices: enabledMcp
+            enabled_mcp_devices: enabledMcp,
+            
+            // Keep existing values for other backend, update the active one
+            gemini_model: dev.gemini_model || "",
+            qwen_model: dev.qwen_model || "",
+            gemini_voice: dev.gemini_voice || "",
+            qwen_voice: dev.qwen_voice || ""
         };
+
+        const activeBackend = payload.llm_backend || (providerConfigData ? providerConfigData.default_backend : 'gemini');
+        const modelField = document.getElementById('configModel');
+        const voiceField = document.getElementById('configVoice');
+
+        if (modelField && voiceField) {
+            if (activeBackend === 'gemini') {
+                payload.gemini_model = modelField.value;
+                payload.gemini_voice = voiceField.value;
+            } else if (activeBackend.startsWith('qwen')) {
+                payload.qwen_model = modelField.value;
+                payload.qwen_voice = voiceField.value;
+            }
+        }
         
         await fetch(`/api/devices/${encodeURIComponent(editingMac)}/config`, {
             method: 'POST',
