@@ -767,14 +767,17 @@ wssXiaozhi.on('connection', (ws, req) => {
           config.apiKey = DASHSCOPE_API_KEY;
           config.model = deviceConfig.qwen_model || QWEN_MODEL;
           config.voice = deviceConfig.qwen_voice || QWEN_VOICE;
-          
+
+          if (activeBackend === 'qwen_omni') {
+              config.input_transcription = false; // Disable input transcription for Qwen Omni
+          }
+
           if (activeBackend === 'qwen_realtime' || (activeBackend === 'qwen' && config.model.includes('realtime'))) {
               newProvider = new QwenRealtimeProvider(config);
           } else {
               newProvider = new QwenOmniProvider(config);
           }
       }
-
       newProvider.on('connected', () => {
           logger.info(`[${sessionId}] Connected to ${activeBackend} API`);
           if (ws.readyState === WebSocket.OPEN) {
