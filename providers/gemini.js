@@ -10,7 +10,7 @@ class GeminiProvider extends LLMProvider {
 
     async connect(tools) {
         const sessionConfig = {
-            responseModalities: ['AUDIO'],
+            responseModalities: ['audio'],
             speechConfig: {
                 voiceConfig: {
                     prebuiltVoiceConfig: {
@@ -113,7 +113,7 @@ class GeminiProvider extends LLMProvider {
     interrupt() {
         if (this.session) {
             try {
-                this.session.send({ clientContent: { turnComplete: true } });
+                this.session.sendClientContent({ turnComplete: true });
             } catch (e) {
                 console.error(`[Gemini] Error sending interrupt: ${e.message}`);
             }

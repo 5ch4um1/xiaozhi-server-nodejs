@@ -1,4 +1,10 @@
 require('dotenv').config();
+
+// Force standard Gemini API instead of Vertex AI
+delete process.env.GOOGLE_GENAI_USE_VERTEXAI;
+delete process.env.GOOGLE_CLOUD_PROJECT;
+delete process.env.GOOGLE_CLOUD_LOCATION;
+
 const { GoogleGenAI, Behavior } = require('@google/genai');
 const WebSocket = require('ws');
 const prism = require('prism-media');
