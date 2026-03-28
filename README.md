@@ -1,6 +1,6 @@
 # Xiaozhi Universal Relay - Multi-LLM Bridge
 
-A modular Node.js relay that implements the **Xiaozhi Protocol**, bridging hardware devices (like ESP32 smartwatches and AI assistants) with various LLM backends including **Google Gemini**, **Alibaba Qwen**, and local **LFM (Liquid Foundation Models)**.
+A modular Node.js relay that implements the **[Xiaozhi Protocol](https://github.com/78/xiaozhi-esp32)**, bridging hardware devices (like ESP32 smartwatches and AI assistants) with various LLM backends including **Google Gemini**, **Alibaba Qwen**, and local **LFM (Liquid Foundation Models)** based on **[llama.cpp LFM2.5-Audio](https://github.com/tdakhran/llama.cpp/tree/tarek/feat/os-lfm2.5-audio-1.5b-upstream)**.
 
 ## Features
 - **Xiaozhi Protocol Support**: Fully compatible with Xiaozhi "hello" handshakes, state management (stt, tts, abort), and binary audio transport.
