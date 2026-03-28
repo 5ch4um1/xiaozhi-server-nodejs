@@ -24,6 +24,8 @@ const bodyParser = require('body-parser');
 const GeminiProvider = require('./providers/gemini');
 const QwenRealtimeProvider = require('./providers/qwen_realtime');
 const QwenOmniProvider = require('./providers/qwen_omni');
+const LlamaLiquidAudioServerProvider = require('./providers/llama-liquid-audio-server');
+const LlamaLiquidInterleavedProvider = require('./providers/llama-liquid-interleaved');
 const providersConfig = require('./providers/config');
 
 // Configuration
@@ -78,14 +80,6 @@ process.on('uncaughtException', (error) => {
   // Give logger time to flush before exiting
   setTimeout(() => process.exit(1), 1000);
 });
-
-if (LLM_BACKEND === 'gemini' && !GEMINI_API_KEY) {
-  logger.error('Missing GEMINI_API_KEY in .env');
-  process.exit(1);
-} else if (LLM_BACKEND === 'qwen' && !DASHSCOPE_API_KEY) {
-  logger.error('Missing DASHSCOPE_API_KEY in .env');
-  process.exit(1);
-}
 
 // Watcher for restart.txt
 const watcher = chokidar.watch(RESTART_FILE_PATH, {
@@ -164,11 +158,13 @@ const builtinTools = [
     parameters: {
       type: "object",
       properties: {
-        llm_backend: { type: "string", enum: ["gemini", "qwen", "qwen_realtime", "qwen_omni"], description: "The AI backend to use." },
+        llm_backend: { type: "string", enum: providersConfig.map(p => p.id), description: "The AI backend to use." },
         gemini_model: { type: "string", enum: (providersConfig.find(p => p.id === 'gemini')?.models.map(m => m.id) || []), description: "Valid Gemini models." },
         qwen_model: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'qwen_realtime')?.models.map(m => m.id) || []), ...(providersConfig.find(p => p.id === 'qwen_omni')?.models.map(m => m.id) || [])])], description: "Valid Qwen models." },
         gemini_voice: { type: "string", enum: (providersConfig.find(p => p.id === 'gemini')?.voices || []), description: "Valid Gemini voices." },
         qwen_voice: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'qwen_realtime')?.voices || []), ...(providersConfig.find(p => p.id === 'qwen_omni')?.voices || [])])], description: "Valid Qwen voices." },
+        llama_model: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'llama_liquid_audio_server')?.models.map(m => m.id) || []), ...(providersConfig.find(p => p.id === 'llama_liquid_interleaved')?.models.map(m => m.id) || [])])], description: "Valid Llama models." },
+        llama_voice: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'llama_liquid_audio_server')?.voices || []), ...(providersConfig.find(p => p.id === 'llama_liquid_interleaved')?.voices || [])])], description: "Valid Llama voices." },
         prompt: { type: "string", description: "The system prompt for the AI." }
       },
       additionalProperties: false
@@ -300,7 +296,11 @@ app.get('/api/auth/status', requireAuth, (req, res) => {
 });
 
 app.get('/api/providers', requireAuth, (req, res) => {
-  res.json({ default_backend: LLM_BACKEND, providers: providersConfig });
+  const providersWithStatus = providersConfig.map(p => {
+      const configured = p.envVars ? p.envVars.every(envVar => !!process.env[envVar]) : true;
+      return { ...p, configured };
+  });
+  res.json({ default_backend: LLM_BACKEND, providers: providersWithStatus });
 });
 
 app.get('/api/devices', requireAuth, (req, res) => {
@@ -338,6 +338,8 @@ app.post('/api/devices/:mac/config', requireAuth, (req, res) => {
     devices[mac].qwen_model = req.body.qwen_model !== undefined ? req.body.qwen_model : devices[mac].qwen_model;
     devices[mac].gemini_voice = req.body.gemini_voice !== undefined ? req.body.gemini_voice : devices[mac].gemini_voice;
     devices[mac].qwen_voice = req.body.qwen_voice !== undefined ? req.body.qwen_voice : devices[mac].qwen_voice;
+    devices[mac].llama_model = req.body.llama_model !== undefined ? req.body.llama_model : devices[mac].llama_model;
+    devices[mac].llama_voice = req.body.llama_voice !== undefined ? req.body.llama_voice : devices[mac].llama_voice;
     devices[mac].input_transcription = req.body.input_transcription !== undefined ? req.body.input_transcription : devices[mac].input_transcription;
     devices[mac].output_transcription = req.body.output_transcription !== undefined ? req.body.output_transcription : devices[mac].output_transcription;
     devices[mac].enabled_mcp_devices = req.body.enabled_mcp_devices !== undefined ? req.body.enabled_mcp_devices : (devices[mac].enabled_mcp_devices || []);
@@ -764,6 +766,18 @@ wssXiaozhi.on('connection', (ws, req) => {
       config.output_transcription = deviceConfig.output_transcription;
 
       let newProvider;
+      const providerConfigDef = providersConfig.find(p => p.id === activeBackend);
+      const isConfigured = providerConfigDef && (!providerConfigDef.envVars || providerConfigDef.envVars.every(envVar => !!process.env[envVar]));
+
+      if (!isConfigured) {
+          logger.error(`[${sessionId}] Provider ${activeBackend} is missing required environment variables.`);
+          if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: `Server Error: Provider ${activeBackend} is not properly configured on the server.` }));
+          }
+          ws.close(1011, "Provider not configured");
+          return;
+      }
+
       if (activeBackend === 'gemini') {
           config.apiKey = GEMINI_API_KEY;
           config.model = deviceConfig.gemini_model || GEMINI_MODEL;
@@ -783,7 +797,31 @@ wssXiaozhi.on('connection', (ws, req) => {
           } else {
               newProvider = new QwenOmniProvider(config);
           }
+      } else if (activeBackend === 'llama_liquid_audio_server') {
+          config.url = process.env.LIQUID_SERVER_URL;
+          config.model = deviceConfig.llama_model || providerConfigDef.models[0].id;
+          config.voice = deviceConfig.llama_voice || providerConfigDef.voices[0];
+          newProvider = new LlamaLiquidAudioServerProvider(config);
+      } else if (activeBackend === 'llama_liquid_interleaved') {
+          config.url = process.env.LIQUID_SERVER_URL;
+          config.model = deviceConfig.llama_model || providerConfigDef.models[0].id;
+          config.voice = deviceConfig.llama_voice || providerConfigDef.voices[0];
+          newProvider = new LlamaLiquidInterleavedProvider(config);
+      } else {
+          logger.error(`[${sessionId}] Unknown backend: ${activeBackend}`);
+          if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'error', session_id: sessionId, data: `Server Error: Unknown backend ${activeBackend}` }));
+          }
+          ws.close(1011, "Unknown backend");
+          return;
       }
+
+      newProvider.on('listen_stop', () => {
+          if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'listen', state: 'stop', session_id: sessionId }));
+          }
+      });
+
       newProvider.on('connected', () => {
           logger.info(`[${sessionId}] Connected to ${activeBackend} API`);
           if (ws.readyState === WebSocket.OPEN) {
@@ -906,6 +944,8 @@ wssXiaozhi.on('connection', (ws, req) => {
               if (args.qwen_model && (error = validate('qwen_model', args.qwen_model))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
               if (args.gemini_voice && (error = validate('gemini_voice', args.gemini_voice))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
               if (args.qwen_voice && (error = validate('qwen_voice', args.qwen_voice))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
+              if (args.llama_model && (error = validate('llama_model', args.llama_model))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
+              if (args.llama_voice && (error = validate('llama_voice', args.llama_voice))) return provider?.sendToolResponse(callId, name, JSON.stringify({ error }));
 
               if (args.llm_backend && args.llm_backend !== devices[macAddress].llm_backend) {
                   devices[macAddress].llm_backend = args.llm_backend;
@@ -913,6 +953,8 @@ wssXiaozhi.on('connection', (ws, req) => {
                   delete devices[macAddress].qwen_model;
                   delete devices[macAddress].gemini_voice;
                   delete devices[macAddress].qwen_voice;
+                  delete devices[macAddress].llama_model;
+                  delete devices[macAddress].llama_voice;
                   updated = true;
               }
               
@@ -920,6 +962,8 @@ wssXiaozhi.on('connection', (ws, req) => {
               if (args.qwen_model) { devices[macAddress].qwen_model = args.qwen_model; updated = true; }
               if (args.gemini_voice) { devices[macAddress].gemini_voice = args.gemini_voice; updated = true; }
               if (args.qwen_voice) { devices[macAddress].qwen_voice = args.qwen_voice; updated = true; }
+              if (args.llama_model) { devices[macAddress].llama_model = args.llama_model; updated = true; }
+              if (args.llama_voice) { devices[macAddress].llama_voice = args.llama_voice; updated = true; }
               if (args.prompt) { devices[macAddress].prompt = args.prompt; updated = true; }
 
               if (updated) {

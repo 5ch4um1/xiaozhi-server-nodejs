@@ -128,7 +128,7 @@
             <label for="configOutputTrans" style="margin:0;">Enable Output Transcription (TTS Subtitles)</label>
         </div>
         
-        <div class="form-group" style="margin-top: 20px;">
+        <div class="form-group" id="mcpToolsGroup" style="margin-top: 20px;">
             <label>Expose Tools from MCP Devices:</label>
             <div id="mcpCheckboxes"></div>
             <p id="noMcpMsg" style="font-size:13px; color:#777; display:none;">No approved MCP devices available.</p>
@@ -215,7 +215,8 @@
                 providerConfigData.providers.forEach(p => {
                     const opt = document.createElement('option');
                     opt.value = p.id;
-                    opt.textContent = p.name;
+                    opt.textContent = p.name + (p.configured ? '' : ' (Not Configured)');
+                    if (!p.configured) opt.disabled = true;
                     backendSelect.appendChild(opt);
                 });
             }
@@ -363,12 +364,17 @@
             if (providerInfo) supportsMcp = providerInfo.supportsMcp;
         }
         
+        const mcpGroup = document.getElementById('mcpToolsGroup');
         if (!supportsMcp) {
+            mcpGroup.style.opacity = '0.4';
+            mcpGroup.style.pointerEvents = 'none';
             checkboxes.forEach(chk => {
                 chk.checked = false;
                 chk.disabled = true;
             });
         } else {
+            mcpGroup.style.opacity = '1';
+            mcpGroup.style.pointerEvents = 'auto';
             checkboxes.forEach(chk => {
                 chk.disabled = false;
             });
@@ -429,6 +435,9 @@
                 } else if (activeBackend.startsWith('qwen')) {
                     targetModel = dev.qwen_model || "";
                     targetVoice = dev.qwen_voice || "";
+                } else if (activeBackend.startsWith('llama')) {
+                    targetModel = dev.llama_model || "";
+                    targetVoice = dev.llama_voice || "";
                 }
 
                 if (targetModel && !Array.from(modelField.options).some(opt => opt.value === targetModel)) {
@@ -524,8 +533,10 @@
             // Keep existing values for other backend, update the active one
             gemini_model: dev.gemini_model || "",
             qwen_model: dev.qwen_model || "",
+            llama_model: dev.llama_model || "",
             gemini_voice: dev.gemini_voice || "",
-            qwen_voice: dev.qwen_voice || ""
+            qwen_voice: dev.qwen_voice || "",
+            llama_voice: dev.llama_voice || ""
         };
 
         const activeBackend = payload.llm_backend || (providerConfigData ? providerConfigData.default_backend : 'gemini');
@@ -539,6 +550,9 @@
             } else if (activeBackend.startsWith('qwen')) {
                 payload.qwen_model = modelField.value;
                 payload.qwen_voice = voiceField.value;
+            } else if (activeBackend.startsWith('llama')) {
+                payload.llama_model = modelField.value;
+                payload.llama_voice = voiceField.value;
             }
         }
         
