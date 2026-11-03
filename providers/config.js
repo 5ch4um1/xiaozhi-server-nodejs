@@ -39,23 +39,13 @@ module.exports = [
         envVars: ['DASHSCOPE_API_KEY']
     },
     {
-        id: 'llama_liquid_audio_server',
-        name: 'Llama Liquid Audio Server',
-        models: [
-            { id: 'llama-liquid-tts', name: 'Llama Liquid TTS (Sequential)' }
-        ],
-        voices: ['US male', 'US female', 'UK male', 'UK female'],
-        supportsMcp: false,
-        envVars: ['LIQUID_SERVER_URL']
-    },
-    {
         id: 'llama_liquid_interleaved',
-        name: 'Llama Liquid Interleaved',
+        name: 'Liquid LFM3 (Realtime)',
         models: [
-            { id: 'llama-liquid-interleaved', name: 'Llama Liquid Interleaved (Native Audio)' }
+            { id: 'LFM3-Audio-2B', name: 'LFM3 Audio 2B (Interleaved Speech + Text)' }
         ],
-        voices: ['UK female', 'UK male', 'US female', 'US male'],
-        supportsMcp: false,
-        envVars: ['LIQUID_SERVER_URL']
+        voices: ['default'],
+        supportsMcp: true,
+        envVars: []
     }
 ];

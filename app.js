@@ -24,8 +24,7 @@ const bodyParser = require('body-parser');
 const GeminiProvider = require('./providers/gemini');
 const QwenRealtimeProvider = require('./providers/qwen_realtime');
 const QwenOmniProvider = require('./providers/qwen_omni');
-const LlamaLiquidAudioServerProvider = require('./providers/llama-liquid-audio-server');
-const LlamaLiquidInterleavedProvider = require('./providers/llama-liquid-interleaved');
+const LlamaLiquidLfm3Provider = require('./providers/llama-liquid-lfm3');
 const providersConfig = require('./providers/config');
 
 // Configuration
@@ -39,6 +38,7 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-native-audio-
 const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3-omni-flash-realtime';
 const GEMINI_VOICE = process.env.GEMINI_VOICE || 'Aoede';
 const QWEN_VOICE = process.env.QWEN_VOICE || 'Cherry';
+const LIQUID_SERVER_URL = process.env.LIQUID_SERVER_URL || 'http://127.0.0.1:8080';
 const MQTT_ENDPOINT = process.env.MQTT_ENDPOINT || 'mqtt://localhost:1883';
 const WEBSOCKET_URL_FOR_ALLOWED_DEVICE = process.env.WEBSOCKET_URL_FOR_ALLOWED_DEVICE || `ws://localhost:${PORT}/xiaozhi/v1/`;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
@@ -92,6 +92,7 @@ watcher.on('add', (path) => { logger.info(`Restart file detected: ${path}. Shutt
 watcher.on('change', (path) => { logger.info(`Restart file modified: ${path}. Shutting down.`); process.exit(0); });
 
 // Device Management
+const BUILTIN_MCP_ID = 'parrot-dashboard';
 let devices = {};
 let mcpDevices = {};
 
@@ -132,7 +133,6 @@ function saveMcpDevices() {
   fs.writeFileSync(MCP_DEVICES_FILE_PATH, JSON.stringify(mcpDevices, null, 2));
 }
 
-const BUILTIN_MCP_ID = 'parrot-dashboard';
 const builtinTools = [
   {
     name: "server.get_pending_devices",
@@ -163,8 +163,8 @@ const builtinTools = [
         qwen_model: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'qwen_realtime')?.models.map(m => m.id) || []), ...(providersConfig.find(p => p.id === 'qwen_omni')?.models.map(m => m.id) || [])])], description: "Valid Qwen models." },
         gemini_voice: { type: "string", enum: (providersConfig.find(p => p.id === 'gemini')?.voices || []), description: "Valid Gemini voices." },
         qwen_voice: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'qwen_realtime')?.voices || []), ...(providersConfig.find(p => p.id === 'qwen_omni')?.voices || [])])], description: "Valid Qwen voices." },
-        llama_model: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'llama_liquid_audio_server')?.models.map(m => m.id) || []), ...(providersConfig.find(p => p.id === 'llama_liquid_interleaved')?.models.map(m => m.id) || [])])], description: "Valid Llama models." },
-        llama_voice: { type: "string", enum: [...new Set([...(providersConfig.find(p => p.id === 'llama_liquid_audio_server')?.voices || []), ...(providersConfig.find(p => p.id === 'llama_liquid_interleaved')?.voices || [])])], description: "Valid Llama voices." },
+        llama_model: { type: "string", enum: (providersConfig.find(p => p.id === 'llama_liquid_interleaved')?.models.map(m => m.id) || []), description: "Valid Llama models." },
+        llama_voice: { type: "string", enum: (providersConfig.find(p => p.id === 'llama_liquid_interleaved')?.voices || []), description: "Valid Llama voices." },
         prompt: { type: "string", description: "The system prompt for the AI." }
       },
       additionalProperties: false
@@ -797,16 +797,11 @@ wssXiaozhi.on('connection', (ws, req) => {
           } else {
               newProvider = new QwenOmniProvider(config);
           }
-      } else if (activeBackend === 'llama_liquid_audio_server') {
-          config.url = process.env.LIQUID_SERVER_URL;
-          config.model = deviceConfig.llama_model || providerConfigDef.models[0].id;
-          config.voice = deviceConfig.llama_voice || providerConfigDef.voices[0];
-          newProvider = new LlamaLiquidAudioServerProvider(config);
       } else if (activeBackend === 'llama_liquid_interleaved') {
-          config.url = process.env.LIQUID_SERVER_URL;
+          config.url = LIQUID_SERVER_URL;
           config.model = deviceConfig.llama_model || providerConfigDef.models[0].id;
           config.voice = deviceConfig.llama_voice || providerConfigDef.voices[0];
-          newProvider = new LlamaLiquidInterleavedProvider(config);
+          newProvider = new LlamaLiquidLfm3Provider(config);
       } else {
           logger.error(`[${sessionId}] Unknown backend: ${activeBackend}`);
           if (ws.readyState === WebSocket.OPEN) {
@@ -1124,6 +1119,14 @@ wssXiaozhi.on('connection', (ws, req) => {
     decoder.destroy();
     encoder.destroy();
     if (audioSendInterval) clearInterval(audioSendInterval);
+    if (provider) {
+      try {
+        provider.close();
+      } catch (e) {
+        logger.error(`[${sessionId}] Error closing provider: ${e.message}`);
+      }
+      provider = null;
+    }
   });
 
   // startGeminiSession(); // Removed immediate start
