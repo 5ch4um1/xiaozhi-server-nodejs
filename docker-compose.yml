@@ -11,7 +11,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: ${PORT:-3000}
-    user: "${PUID:-0}:${PGID:-0}"
+    user: "${PUID:-1000}:${PGID:-1000}"
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     volumes:
