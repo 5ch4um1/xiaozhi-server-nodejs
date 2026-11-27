@@ -1,0 +1,30 @@
+name: kotty-esp32-nodejs
+
+services:
+  xiaozhi-server-nodejs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xiaozhi-server-nodejs:v1.0.0
+    container_name: xiaozhi-server-nodejs
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${PORT:-3085}
+    user: "${PUID:-0}:${PGID:-0}"
+    ports:
+      - "${PORT:-3085}:${PORT:-3085}"
+    networks:
+      - brickly-network
+    volumes:
+      - ./devices.json:/app/devices.json
+      - ./mcp_devices.json:/app/mcp_devices.json
+      - ./sessions:/app/sessions
+      - ./tmp:/app/tmp
+      - ./public/xiaozhi:/app/public/xiaozhi
+
+networks:
+  brickly-network:
+    external: true
